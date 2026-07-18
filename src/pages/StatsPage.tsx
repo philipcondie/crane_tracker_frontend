@@ -1,9 +1,13 @@
 import { useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useCranes } from '../store'
 import { PillNav } from '../components/PillNav'
 import { daysSince } from '../utils'
 import type { CraneSummary } from '../types'
+
+// DEFERRED (v2/v3): Stats aggregates the entire dataset in memory and hasn't
+// been migrated to the API. It's unrouted and renders against an empty set;
+// wire it to a wide-bounds (or dedicated stats) endpoint when reviving it.
+const cranes: CraneSummary[] = []
 
 interface CityRow {
   city: string
@@ -72,7 +76,6 @@ function hoursSinceNightly(): number {
 }
 
 export default function StatsPage() {
-  const { cranes } = useCranes()
   const navigate = useNavigate()
 
   const { total, active, recent, cities, board, spots } = useMemo(() => {
@@ -85,7 +88,7 @@ export default function StatsPage() {
       board: cityLeaderboard(cranes),
       spots: hotspots(cranes),
     }
-  }, [cranes])
+  }, [])
 
   const viewOnMap = (lat: number, lng: number, z = 13) => navigate(`/?lat=${lat.toFixed(4)}&lng=${lng.toFixed(4)}&z=${z}`)
 

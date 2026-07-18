@@ -1,3 +1,4 @@
+import type { CSSProperties } from 'react'
 import type { CraneDetail } from '../types'
 import { fmtDate, fmtLatLng } from '../utils'
 import { PhotoBox, ThumbStrip } from './PhotoBits'
@@ -11,9 +12,11 @@ interface DetailProps {
   onNext: () => void
   onContribute: () => void
   onReportGone: () => void
+  /** False until the contribute/status endpoints exist; disables both writes. */
+  writesEnabled: boolean
 }
 
-export function DetailRail({ crane, photoIdx, onPrev, onNext, onContribute, onReportGone }: DetailProps) {
+export function DetailRail({ crane, photoIdx, onPrev, onNext, onContribute, onReportGone, writesEnabled }: DetailProps) {
   return (
     <div className="panel-col">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
@@ -38,12 +41,23 @@ export function DetailRail({ crane, photoIdx, onPrev, onNext, onContribute, onRe
         <ArticleLinks links={crane.links} />
       </div>
       <div style={{ flex: 1 }} />
-      <button className="btn btn-outline" onClick={onContribute}>
-        ＋ ADD PHOTO / INFO
+      <button
+        className="btn btn-outline"
+        onClick={onContribute}
+        disabled={!writesEnabled}
+        title={writesEnabled ? undefined : 'Not yet available'}
+      >
+        {writesEnabled ? '＋ ADD PHOTO / INFO' : '＋ ADD PHOTO / INFO — COMING SOON'}
       </button>
       {crane.status === 'active' && (
-        <button className="btn btn-danger" style={{ marginTop: 9 }} onClick={onReportGone}>
-          REPORT AS GONE
+        <button
+          className="btn btn-danger"
+          style={{ marginTop: 9 }}
+          onClick={onReportGone}
+          disabled={!writesEnabled}
+          title={writesEnabled ? undefined : 'Not yet available'}
+        >
+          {writesEnabled ? 'REPORT AS GONE' : 'REPORT AS GONE — COMING SOON'}
         </button>
       )}
     </div>
@@ -70,7 +84,7 @@ interface DetailSheetProps extends DetailProps {
   onToggle: () => void
 }
 
-export function DetailSheet({ crane, expanded, onToggle, photoIdx, onPrev, onNext, onContribute, onReportGone }: DetailSheetProps) {
+export function DetailSheet({ crane, expanded, onToggle, photoIdx, onPrev, onNext, onContribute, onReportGone, writesEnabled }: DetailSheetProps) {
   const cover = crane.imgs.length ? crane.imgs[0] : null
   return (
     <div style={{ padding: '12px 16px 18px', height: '100%', overflow: 'auto' }}>
@@ -106,12 +120,24 @@ export function DetailSheet({ crane, expanded, onToggle, photoIdx, onPrev, onNex
             <div>COORD — {fmtLatLng(crane.lat, crane.lng)}</div>
             <ArticleLinks links={crane.links} />
           </div>
-          <button className="btn round btn-outline" style={{ marginTop: 12, padding: 13 }} onClick={onContribute}>
-            ＋ ADD PHOTO / INFO
+          <button
+            className="btn round btn-outline"
+            style={{ marginTop: 12, padding: 13 }}
+            onClick={onContribute}
+            disabled={!writesEnabled}
+            title={writesEnabled ? undefined : 'Not yet available'}
+          >
+            {writesEnabled ? '＋ ADD PHOTO / INFO' : '＋ ADD PHOTO / INFO — COMING SOON'}
           </button>
           {crane.status === 'active' && (
-            <button className="btn round btn-danger" style={{ marginTop: 9, padding: 11 }} onClick={onReportGone}>
-              REPORT AS GONE
+            <button
+              className="btn round btn-danger"
+              style={{ marginTop: 9, padding: 11 }}
+              onClick={onReportGone}
+              disabled={!writesEnabled}
+              title={writesEnabled ? undefined : 'Not yet available'}
+            >
+              {writesEnabled ? 'REPORT AS GONE' : 'REPORT AS GONE — COMING SOON'}
             </button>
           )}
         </div>
@@ -120,6 +146,52 @@ export function DetailSheet({ crane, expanded, onToggle, photoIdx, onPrev, onNex
           ▲ TAP FOR PHOTOS &amp; LINKS ▲
         </div>
       )}
+    </div>
+  )
+}
+
+/* ---------- detail: loading / error ---------- */
+
+function panelPad(mobile: boolean): CSSProperties {
+  return mobile
+    ? { padding: '12px 16px 18px', height: '100%', overflow: 'auto' }
+    : {}
+}
+
+/** Shown while a selected crane's detail is being fetched (mainly deep links). */
+export function DetailLoading({ mobile }: { mobile: boolean }) {
+  return (
+    <div className={mobile ? '' : 'panel-col'} style={panelPad(mobile)}>
+      {mobile && <div className="sheet-handle" style={{ marginBottom: 12 }} />}
+      <div style={{ fontSize: 11, letterSpacing: '.1em', color: 'var(--t-soft)', marginBottom: 14 }}>
+        ◌ LOADING CRANE…
+      </div>
+      <div className="hatch" style={{ height: 150, border: '1px solid var(--line2)', borderRadius: 4, opacity: 0.5 }} />
+      <div style={{ fontSize: 10.5, color: 'var(--t-mut)', marginTop: 14, letterSpacing: '.04em' }}>
+        Fetching the latest details…
+      </div>
+    </div>
+  )
+}
+
+/** Shown when a selected crane's detail fetch fails (bad/stale link, deleted). */
+export function DetailError({ mobile, onDismiss }: { mobile: boolean; onDismiss: () => void }) {
+  return (
+    <div className={mobile ? '' : 'panel-col'} style={panelPad(mobile)}>
+      {mobile && <div className="sheet-handle" style={{ marginBottom: 12 }} />}
+      <div className="status-gone" style={{ marginBottom: 14 }}>
+        ● NOT FOUND
+      </div>
+      <div className="panel-title" style={{ fontSize: 18, textWrap: 'pretty' }}>
+        This crane couldn't be loaded
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--t-body)', lineHeight: 1.8, marginTop: 11, letterSpacing: '.03em', textWrap: 'pretty' }}>
+        It may have been removed, or the link is out of date.
+      </div>
+      <div style={{ flex: 1 }} />
+      <button className={mobile ? 'btn round btn-quiet' : 'btn btn-quiet'} onClick={onDismiss}>
+        ← BACK TO MAP
+      </button>
     </div>
   )
 }

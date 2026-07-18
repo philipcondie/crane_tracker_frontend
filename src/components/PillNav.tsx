@@ -23,12 +23,7 @@ export function PillNav({ floating, railOffset, round }: Props) {
       <NavLink to="/" end className={seg}>
         ▲ MAP
       </NavLink>
-      <NavLink to="/feed" className={seg}>
-        FEED
-      </NavLink>
-      <NavLink to="/stats" className={seg}>
-        STATS
-      </NavLink>
+      {/* FEED and STATS are deferred (v2/v3) until they're migrated to the API. */}
     </nav>
   )
 }
