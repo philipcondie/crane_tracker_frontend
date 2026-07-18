@@ -6,12 +6,12 @@ export type CraneStatus = 'active' | 'gone'
  * should return once there's a backend.
  */
 export interface CraneSummary {
-  id: number
+  id: string
   name: string
   status: CraneStatus
   city: string
   neighborhood?: string
-  /** ISO date (YYYY-MM-DD) the crane was first logged */
+  /** ISO timestamp the crane was first logged; displayed as date-only. */
   addedAt: string
   lat: number
   lng: number

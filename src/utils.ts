@@ -4,20 +4,23 @@ export function fmtLatLng(lat: number, lng: number): string {
   return `${lat.toFixed(3)}, ${lng.toFixed(3)}`
 }
 
+/**
+ * Parse an ISO string that may be date-only (YYYY-MM-DD) or a full timestamp.
+ * A bare date is anchored at local noon so day-boundary math stays stable across
+ * timezones; a full timestamp is parsed as-is.
+ */
+function parseISO(iso: string): Date {
+  return new Date(iso.includes('T') ? iso : `${iso}T12:00:00`)
+}
+
+/** Date-only display, e.g. "Jun 1, 2026" — drops any time component. */
 export function fmtDate(iso: string): string {
-  const d = new Date(`${iso}T12:00:00`)
+  const d = parseISO(iso)
   return `${MONTHS[d.getMonth()]} ${d.getDate()}, ${d.getFullYear()}`
 }
 
-export function todayISO(): string {
-  const d = new Date()
-  const m = String(d.getMonth() + 1).padStart(2, '0')
-  const day = String(d.getDate()).padStart(2, '0')
-  return `${d.getFullYear()}-${m}-${day}`
-}
-
 export function relDate(iso: string): string {
-  const then = new Date(`${iso}T12:00:00`).getTime()
+  const then = parseISO(iso).getTime()
   const days = Math.floor((Date.now() - then) / 86400000)
   if (days <= 0) return 'today'
   if (days === 1) return 'yesterday'
@@ -27,7 +30,7 @@ export function relDate(iso: string): string {
 }
 
 export function daysSince(iso: string): number {
-  return Math.floor((Date.now() - new Date(`${iso}T12:00:00`).getTime()) / 86400000)
+  return Math.floor((Date.now() - parseISO(iso).getTime()) / 86400000)
 }
 
 /** Read up to `max` images from a file input as data URLs (session-only storage). */

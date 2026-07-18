@@ -4,14 +4,11 @@ import { BrowserRouter } from 'react-router-dom'
 import 'leaflet/dist/leaflet.css'
 import './index.css'
 import App from './App'
-import { CraneProvider } from './store'
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <BrowserRouter>
-      <CraneProvider>
-        <App />
-      </CraneProvider>
+      <App />
     </BrowserRouter>
   </StrictMode>,
 )

@@ -1,9 +1,14 @@
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { useCranes } from '../store'
 import { PillNav } from '../components/PillNav'
 import { PinGlyph } from '../components/PhotoBits'
 import { relDate } from '../utils'
+import type { CraneDetail } from '../types'
+
+// DEFERRED (v2/v3): the Feed still assumes the whole dataset is available in
+// memory. It hasn't been migrated to the bounding-box API, so it's unrouted and
+// renders against an empty set. Wire it to a wide-bounds fetch when reviving it.
+const cranes: CraneDetail[] = []
 
 type Filter = 'all' | 'active' | 'gone'
 
@@ -14,7 +19,6 @@ const FILTERS: { key: Filter; label: string }[] = [
 ]
 
 export default function FeedPage() {
-  const { cranes } = useCranes()
   const [filter, setFilter] = useState<Filter>('all')
   const navigate = useNavigate()
 
@@ -22,8 +26,15 @@ export default function FeedPage() {
     () =>
       cranes
         .filter((c) => filter === 'all' || c.status === filter)
-        .sort((a, b) => (a.addedAt < b.addedAt ? 1 : a.addedAt > b.addedAt ? -1 : b.id - a.id)),
-    [cranes, filter],
+        // Newest first, tie-broken by id descending. Ids are opaque strings now,
+        // so compare numerically-aware ('10' after '9') and return a real 0 for
+        // equality rather than an arbitrary -1.
+        .sort(
+          (a, b) =>
+            (a.addedAt < b.addedAt ? 1 : a.addedAt > b.addedAt ? -1 : 0) ||
+            b.id.localeCompare(a.id, undefined, { numeric: true }),
+        ),
+    [filter],
   )
 
   return (
