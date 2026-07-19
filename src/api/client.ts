@@ -67,8 +67,21 @@ export async function getCrane(id: string, signal?: AbortSignal): Promise<CraneD
   return parse<CraneDetail>(res)
 }
 
+/**
+ * Response envelope for a bounds query. The server caps how many cranes it will
+ * return for one viewport, so a zoomed-out query can come back incomplete —
+ * `truncated` is how it says so, and the only signal the client gets.
+ */
+export interface CranesInBoundsResponse {
+  cranes: CraneSummary[]
+  truncated: boolean
+}
+
 /** GET /cranes?north&south&east&west — summaries within a viewport. */
-export async function getCranesInBounds(bounds: Bounds, signal?: AbortSignal): Promise<CraneSummary[]> {
+export async function getCranesInBounds(
+  bounds: Bounds,
+  signal?: AbortSignal,
+): Promise<CranesInBoundsResponse> {
   const q = new URLSearchParams({
     north: String(bounds.north),
     south: String(bounds.south),
@@ -76,5 +89,5 @@ export async function getCranesInBounds(bounds: Bounds, signal?: AbortSignal): P
     west: String(bounds.west),
   })
   const res = await fetch(`${BASE_URL}/cranes?${q}`, { signal })
-  return parse<CraneSummary[]>(res)
+  return parse<CranesInBoundsResponse>(res)
 }

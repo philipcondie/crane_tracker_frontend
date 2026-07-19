@@ -32,6 +32,11 @@ const WELCOME_KEY = 'ct_seen_v1'
 // persists. Flip to true once POST /contribute and PATCH /cranes/{id} exist.
 const WRITES_ENABLED = false
 
+// How long the truncation banner lingers after results stop being truncated.
+// Comfortably longer than the 350ms fetch debounce in useCranesInBounds, so a
+// pan across dense areas rides through on one banner instead of strobing.
+const TRUNC_LINGER_MS = 1500
+
 function seenWelcome(): boolean {
   try {
     return Boolean(localStorage.getItem(WELCOME_KEY))
@@ -73,7 +78,43 @@ export default function MapPage() {
   // Bumped after a write that doesn't move the map, to force a refetch of the
   // unchanged viewport (see useCranesInBounds).
   const [refetchToken, setRefetchToken] = useState(0)
-  const { cranes, loading, error, addOptimistic } = useCranesInBounds(bounds, refetchToken)
+  const { cranes, loading, error, truncated, addOptimistic } = useCranesInBounds(
+    bounds,
+    refetchToken,
+  )
+
+  const [showTruncated, setShowTruncated] = useState(false)
+  const truncTimer = useRef<number | undefined>(undefined)
+
+  /**
+   * Latches the truncation banner so panning doesn't strobe it. Deliberately
+   * asymmetric: showing is immediate (a user who just zoomed out should learn
+   * straight away that pins are missing), hiding waits out TRUNC_LINGER_MS.
+   *
+   * The pending hide is cancelled whenever truncation comes back, so a stretch
+   * of alternating results holds one steady banner instead of blinking. Only a
+   * full quiet period — the user actually zoomed in far enough — clears it.
+   */
+  useEffect(() => {
+    if (truncated) {
+      window.clearTimeout(truncTimer.current)
+      truncTimer.current = undefined
+      setShowTruncated(true)
+      return
+    }
+    // Don't start the countdown on a request still in flight: mid-pan the hook
+    // reports truncated=false simply because nothing has come back yet, and
+    // treating that as "resolved" is the flicker we're suppressing.
+    if (loading || showTruncated === false || truncTimer.current !== undefined) return
+    truncTimer.current = window.setTimeout(() => {
+      truncTimer.current = undefined
+      setShowTruncated(false)
+    }, TRUNC_LINGER_MS)
+  }, [truncated, loading, showTruncated])
+
+  // Unmount-only: a pending hide firing after teardown would setState on a dead
+  // component. The show path clears this timer itself.
+  useEffect(() => () => window.clearTimeout(truncTimer.current), [])
 
   const [selId, setSelId] = useState<string | null>(() => params.get('crane'))
   // Full detail for the selected crane (imgs/links); summary is the fallback header.
@@ -509,6 +550,27 @@ export default function MapPage() {
           }
         >
           COULD NOT LOAD CRANES
+        </div>
+      )}
+
+      {/*
+        Truncation is a property of what's on screen right now, not an event, so
+        this is a persistent banner rather than a timed toast: it stays until a
+        zoom-in actually resolves it. Driven by the latched `showTruncated`, not
+        raw `truncated`, to survive the gaps between fetches while panning.
+        `!error` because a failed fetch renders its own banner in the same slot
+        and truncation is meaningless alongside it.
+      */}
+      {showTruncated && !error && (
+        <div
+          className="toast"
+          style={
+            isMobile
+              ? { left: '50%', top: 96, transform: 'translateX(-50%)' }
+              : { left: 'calc(50% - 157px)', bottom: 56, transform: 'translateX(-50%)' }
+          }
+        >
+          RESULTS TRUNCATED — ZOOM IN TO SEE ALL CRANES
         </div>
       )}
 

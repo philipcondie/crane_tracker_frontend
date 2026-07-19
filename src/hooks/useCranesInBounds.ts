@@ -8,6 +8,12 @@ interface State {
   cranes: CraneSummary[]
   loading: boolean
   error: string | null
+  /**
+   * The server hit its per-viewport cap and returned only part of what's in
+   * bounds. Describes the last *completed* fetch, so it must be recomputed on
+   * every settle — a stale `true` would keep warning after a zoom-in fixed it.
+   */
+  truncated: boolean
 }
 
 interface Result extends State {
@@ -37,7 +43,12 @@ interface Result extends State {
  * token to invalidate.
  */
 export function useCranesInBounds(bounds: Bounds | null, refetchToken = 0): Result {
-  const [state, setState] = useState<State>({ cranes: [], loading: false, error: null })
+  const [state, setState] = useState<State>({
+    cranes: [],
+    loading: false,
+    error: null,
+    truncated: false,
+  })
 
   // Holds the AbortController for the request currently in flight, so a newer
   // request can cancel it. Lives in a ref so it survives re-renders.
@@ -81,7 +92,9 @@ export function useCranesInBounds(bounds: Bounds | null, refetchToken = 0): Resu
       setState((s) => ({ ...s, loading: true, error: null }))
 
       getCranesInBounds(bounds, controller.signal)
-        .then((cranes) => setState({ cranes, loading: false, error: null }))
+        .then(({ cranes, truncated }) =>
+          setState({ cranes, loading: false, error: null, truncated }),
+        )
         .catch((err: unknown) => {
           // A superseded request rejects with AbortError — ignore it entirely.
           if (err instanceof DOMException && err.name === 'AbortError') return
@@ -89,7 +102,8 @@ export function useCranesInBounds(bounds: Bounds | null, refetchToken = 0): Resu
           // Drop the previous viewport's cranes. Retaining them is right while
           // loading (avoids a flash of empty map) but wrong here: pins from the
           // old viewport would render as if they belonged to the new one.
-          setState({ cranes: [], loading: false, error: message })
+          // truncated clears with them: it described a result we just discarded.
+          setState({ cranes: [], loading: false, error: message, truncated: false })
         })
     }
 
