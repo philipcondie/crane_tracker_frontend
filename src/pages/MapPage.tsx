@@ -70,7 +70,10 @@ export default function MapPage() {
 
   // Viewport bounds drive the crane fetch. Null until the map has initialized.
   const [bounds, setBounds] = useState<Bounds | null>(null)
-  const { cranes, loading, error } = useCranesInBounds(bounds)
+  // Bumped after a write that doesn't move the map, to force a refetch of the
+  // unchanged viewport (see useCranesInBounds).
+  const [refetchToken, setRefetchToken] = useState(0)
+  const { cranes, loading, error } = useCranesInBounds(bounds, refetchToken)
 
   const [selId, setSelId] = useState<string | null>(() => params.get('crane'))
   // Full detail for the selected crane (imgs/links); summary is the fallback header.
@@ -339,7 +342,9 @@ export default function MapPage() {
       setExpanded(true)
       setDraft([])
       setPhotoIdx(0)
-      syncBounds() // refetch so the new pin appears in the viewport set
+      // The map hasn't moved, so syncBounds alone would be a no-op — bump the
+      // token to refetch this same viewport and pull in the new pin.
+      setRefetchToken((t) => t + 1)
       flash('CRANE ADDED ✓')
     } catch (err) {
       flash('COULD NOT ADD CRANE')

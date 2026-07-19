@@ -17,8 +17,14 @@ interface State {
  * fresher data on screen.
  *
  * Pass `null` bounds to skip fetching (e.g. before the map has initialized).
+ *
+ * `refetchToken` forces a refetch of the *same* viewport. Bounds alone can't
+ * express "same view, new data": syncBounds deliberately preserves the previous
+ * object when the viewport is numerically unchanged, so writes that don't move
+ * the map (adding a crane) would otherwise never re-run this effect. Bump the
+ * token to invalidate.
  */
-export function useCranesInBounds(bounds: Bounds | null): State {
+export function useCranesInBounds(bounds: Bounds | null, refetchToken = 0): State {
   const [state, setState] = useState<State>({ cranes: [], loading: false, error: null })
 
   // Holds the AbortController for the request currently in flight, so a newer
@@ -65,7 +71,7 @@ export function useCranesInBounds(bounds: Bounds | null): State {
       own?.abort()
       if (inFlight.current === own) inFlight.current = null
     }
-  }, [bounds])
+  }, [bounds, refetchToken])
 
   return state
 }
