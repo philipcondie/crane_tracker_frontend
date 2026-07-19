@@ -70,7 +70,10 @@ export default function MapPage() {
 
   // Viewport bounds drive the crane fetch. Null until the map has initialized.
   const [bounds, setBounds] = useState<Bounds | null>(null)
-  const { cranes, loading, error } = useCranesInBounds(bounds)
+  // Bumped after a write that doesn't move the map, to force a refetch of the
+  // unchanged viewport (see useCranesInBounds).
+  const [refetchToken, setRefetchToken] = useState(0)
+  const { cranes, loading, error, addOptimistic } = useCranesInBounds(bounds, refetchToken)
 
   const [selId, setSelId] = useState<string | null>(() => params.get('crane'))
   // Full detail for the selected crane (imgs/links); summary is the fallback header.
@@ -332,6 +335,11 @@ export default function MapPage() {
         lng: temp.lng,
         status: 'active',
       })
+      // Insert before removing the temp marker: React commits both in one pass,
+      // so the real pin is already on the map when the placeholder goes. Doing
+      // it the other way leaves a gap until the refetch lands, which is the
+      // flicker this avoids.
+      addOptimistic(crane)
       removeTemp()
       setSelId(crane.id)
       setPanel('detail')
@@ -339,7 +347,10 @@ export default function MapPage() {
       setExpanded(true)
       setDraft([])
       setPhotoIdx(0)
-      syncBounds() // refetch so the new pin appears in the viewport set
+      // The map hasn't moved, so syncBounds alone would be a no-op — bump the
+      // token to refetch this same viewport, reconciling the optimistic pin
+      // against the server's list.
+      setRefetchToken((t) => t + 1)
       flash('CRANE ADDED ✓')
     } catch (err) {
       flash('COULD NOT ADD CRANE')
