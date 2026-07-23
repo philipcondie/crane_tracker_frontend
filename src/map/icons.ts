@@ -15,6 +15,26 @@ export function craneIcon(status: CraneStatus, selected: boolean): L.DivIcon {
   return L.divIcon({ className: '', html, iconSize: [sz, sz], iconAnchor: [c, c] })
 }
 
+/**
+ * Cluster bubble, drawn in the same blueprint language as craneIcon: navy ink,
+ * cyan ring, hairline crosshair ticks bleeding out of the circle.
+ *
+ * Size steps with count rather than scaling continuously — three fixed sizes
+ * stay legible and keep the icon anchor arithmetic exact, where a continuous
+ * ramp would produce half-pixel centres and blur the ring.
+ */
+export function clusterIcon(count: number): L.DivIcon {
+  const sz = count < 10 ? 32 : count < 100 ? 40 : 48
+  const c = sz / 2
+  const label = count < 1000 ? String(count) : `${Math.floor(count / 1000)}k+`
+  const html = `<div style="position:relative;width:${sz}px;height:${sz}px">
+    <div style="position:absolute;left:${c - 1}px;top:-4px;width:2px;height:${sz + 8}px;background:#16324f;opacity:.35"></div>
+    <div style="position:absolute;left:-4px;top:${c - 1}px;width:${sz + 8}px;height:2px;background:#16324f;opacity:.35"></div>
+    <div style="position:absolute;left:0;top:0;width:${sz}px;height:${sz}px;border:2px solid #16324f;border-radius:50%;background:rgba(233,235,237,.92);box-shadow:0 0 0 3px rgba(42,169,212,.25);display:flex;align-items:center;justify-content:center;font:600 ${count < 100 ? 12 : 11}px ui-monospace,SFMono-Regular,Menlo,monospace;color:#16324f;letter-spacing:.02em">${label}</div>
+  </div>`
+  return L.divIcon({ className: '', html, iconSize: [sz, sz], iconAnchor: [c, c] })
+}
+
 /** Dashed cyan teardrop for the draggable "new crane" marker */
 export function tempIcon(): L.DivIcon {
   return L.divIcon({

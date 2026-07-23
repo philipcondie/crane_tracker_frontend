@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import L from 'leaflet'
+import 'leaflet.markercluster'
 import { createCrane, type Bounds } from '../api/client'
 import { useCranesInBounds } from '../hooks/useCranesInBounds'
 import { useCraneDetail } from '../hooks/useCraneDetail'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { fmtLatLng } from '../utils'
-import { craneIcon, tempIcon } from '../map/icons'
+import { clusterIcon, craneIcon, tempIcon } from '../map/icons'
 import { SEATTLE_CENTER } from '../data/seed'
 import { PillNav } from '../components/PillNav'
 import { WelcomeOverlay } from '../components/WelcomeOverlay'
@@ -145,6 +146,7 @@ export default function MapPage() {
   const mapRef = useRef<L.Map | null>(null)
   const layersRef = useRef<{ muted: L.TileLayer; sat: L.TileLayer } | null>(null)
   const markersRef = useRef(new Map<string, L.Marker>())
+  const clusterRef = useRef<L.MarkerClusterGroup | null>(null)
   const tempMkRef = useRef<L.Marker | null>(null)
   const toastTimer = useRef<number | undefined>(undefined)
 
@@ -236,6 +238,27 @@ export default function MapPage() {
       { maxZoom: 19, attribution: '© Esri' },
     )
     muted.addTo(map)
+
+    // Cluster group owns every crane marker; nothing is added to the map
+    // directly (see the marker-sync effect). Options worth knowing:
+    //   disableClusteringAtZoom — past z17 the viewport is small enough that
+    //     real pins are both affordable and more useful than a bubble.
+    //   chunkedLoading — a dense viewport can deliver hundreds of markers at
+    //     once; chunking yields to the event loop so the map stays responsive
+    //     instead of locking up mid-pan.
+    //   maxClusterRadius — tighter than the 80px default. These are physical
+    //     structures a few blocks apart, and the loose default merges cranes
+    //     users read as distinct landmarks.
+    const clusters = L.markerClusterGroup({
+      disableClusteringAtZoom: 17,
+      chunkedLoading: true,
+      maxClusterRadius: 40,
+      showCoverageOnHover: false,
+      iconCreateFunction: (cluster) => clusterIcon(cluster.getChildCount()),
+    })
+    clusters.addTo(map)
+    clusterRef.current = clusters
+
     map.on('click', (e: L.LeafletMouseEvent) => {
       const mode = panelRef.current
       if (mode === 'addhint' || mode === 'addform') moveTemp(e.latlng)
@@ -259,6 +282,7 @@ export default function MapPage() {
       map.remove()
       mapRef.current = null
       layersRef.current = null
+      clusterRef.current = null
       markersRef.current.clear()
       tempMkRef.current = null
     }
@@ -269,25 +293,35 @@ export default function MapPage() {
   // for cranes that fell out of the viewport.
   useEffect(() => {
     const map = mapRef.current
-    if (!map) return
+    const clusters = clusterRef.current
+    if (!map || !clusters) return
     const seen = new Set<string>()
+    // Batch the adds: addLayers() clusters one pass over the whole set, where
+    // repeated addLayer() calls re-cluster on every insert.
+    const added: L.Marker[] = []
     for (const crane of cranes) {
       seen.add(crane.id)
       let mk = markersRef.current.get(crane.id)
       if (!mk) {
         const id = crane.id
-        mk = L.marker([crane.lat, crane.lng]).addTo(map)
+        mk = L.marker([crane.lat, crane.lng])
         mk.on('click', () => selectCraneRef.current(id))
         markersRef.current.set(id, mk)
+        added.push(mk)
       }
       mk.setIcon(craneIcon(crane.status, crane.id === selId))
     }
+    if (added.length) clusters.addLayers(added)
+    const stale: L.Marker[] = []
     for (const [id, mk] of markersRef.current) {
       if (!seen.has(id)) {
-        map.removeLayer(mk)
+        stale.push(mk)
         markersRef.current.delete(id)
       }
     }
+    // Must go through the group, not map.removeLayer: a marker inside a cluster
+    // isn't on the map, so removing it there is a no-op that leaks the pin.
+    if (stale.length) clusters.removeLayers(stale)
   }, [cranes, selId])
 
   // Base layer swap
