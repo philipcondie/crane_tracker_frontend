@@ -1,7 +1,7 @@
 import { useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { PillNav } from '../components/PillNav'
-import { daysSince } from '../utils'
+import { daysSince, fmtArea } from '../utils'
 import type { CraneSummary } from '../types'
 
 // DEFERRED (v2/v3): Stats aggregates the entire dataset in memory and hasn't
@@ -17,6 +17,8 @@ interface CityRow {
 }
 
 interface Hotspot {
+  /** Grid-cell id ("lat:lng" bucket) — stable React key; labels are not unique. */
+  cell: string
   label: string
   count: number
   lat: number
@@ -27,6 +29,9 @@ function cityLeaderboard(cranes: CraneSummary[]): CityRow[] {
   const byCity = new Map<string, CraneSummary[]>()
   for (const c of cranes) {
     if (c.status !== 'active') continue
+    // Ungeocoded cranes have no city to rank under; a synthetic "Unknown" row
+    // would compete with real cities for a top-10 slot.
+    if (!c.city) continue
     const list = byCity.get(c.city) ?? []
     list.push(c)
     byCity.set(c.city, list)
@@ -52,11 +57,16 @@ function hotspots(cranes: CraneSummary[]): Hotspot[] {
     list.push(c)
     cells.set(key, list)
   }
-  return [...cells.values()]
-    .map((list) => {
+  return [...cells.entries()]
+    .map(([cell, list]) => {
       const anchor = list[0]
       return {
-        label: anchor.neighborhood ? `${anchor.city} — ${anchor.neighborhood}` : anchor.city,
+        // The grid cell is the only stable identity here: labels collide when two
+        // cells share a city, and every ungeocoded cell shares the same fallback.
+        cell,
+        // The cluster is real even when ungeocoded — it's keyed on coordinates,
+        // so fall back to a label rather than dropping the cell.
+        label: fmtArea(anchor.city, anchor.neighborhood) ?? 'UNKNOWN AREA',
         count: list.length,
         lat: list.reduce((s, c) => s + c.lat, 0) / list.length,
         lng: list.reduce((s, c) => s + c.lng, 0) / list.length,
@@ -84,7 +94,8 @@ export default function StatsPage() {
       total: cranes.length,
       active: activeList.length,
       recent: cranes.filter((c) => daysSince(c.addedAt) <= 30).length,
-      cities: new Set(cranes.map((c) => c.city)).size,
+      // filter before the Set — a null city would otherwise count as its own "city"
+      cities: new Set(cranes.map((c) => c.city).filter(Boolean)).size,
       board: cityLeaderboard(cranes),
       spots: hotspots(cranes),
     }
@@ -142,7 +153,7 @@ export default function StatsPage() {
         <div className="section-title">CONSTRUCTION HOTSPOTS</div>
         <div className="board">
           {spots.map((spot) => (
-            <div key={spot.label} className="board-row">
+            <div key={spot.cell} className="board-row">
               <span className="board-rank">▲</span>
               <span className="board-name">{spot.label}</span>
               <span className="board-count">{spot.count}</span>

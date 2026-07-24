@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { PillNav } from '../components/PillNav'
 import { PinGlyph } from '../components/PhotoBits'
-import { relDate } from '../utils'
+import { fmtArea, relDate } from '../utils'
 import type { CraneDetail } from '../types'
 
 // DEFERRED (v2/v3): the Feed still assumes the whole dataset is available in
@@ -61,34 +61,38 @@ export default function FeedPage() {
             </button>
           ))}
         </div>
-        {items.map((c) => (
-          <button key={c.id} className="feed-card" onClick={() => navigate(`/?crane=${c.id}`)}>
-            <div className="feed-thumb hatch">
-              {c.imgs.length ? (
-                <img src={c.imgs[0]} alt={c.name} />
-              ) : (
-                <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-                  <PinGlyph size={20} gone={c.status === 'gone'} />
+        {items.map((c) => {
+          const area = fmtArea(c.city, c.neighborhood)
+          return (
+            <button key={c.id} className="feed-card" onClick={() => navigate(`/?crane=${c.id}`)}>
+              <div className="feed-thumb hatch">
+                {c.imgs.length ? (
+                  <img src={c.imgs[0]} alt={c.name} />
+                ) : (
+                  <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+                    <PinGlyph size={20} gone={c.status === 'gone'} />
+                  </div>
+                )}
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div className="panel-title" style={{ fontSize: 14, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {c.name}
                 </div>
-              )}
-            </div>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div className="panel-title" style={{ fontSize: 14, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {c.name}
+                {area && (
+                  <div style={{ fontSize: 10, color: 'var(--t-body)', marginTop: 4, letterSpacing: '.04em' }}>
+                    {area}
+                  </div>
+                )}
+                <div style={{ fontSize: 9.5, color: 'var(--t-mut)', marginTop: 3, letterSpacing: '.04em' }}>
+                  added {relDate(c.addedAt)}
+                </div>
               </div>
-              <div style={{ fontSize: 10, color: 'var(--t-body)', marginTop: 4, letterSpacing: '.04em' }}>
-                {c.city}
-                {c.neighborhood ? ` · ${c.neighborhood}` : ''}
-              </div>
-              <div style={{ fontSize: 9.5, color: 'var(--t-mut)', marginTop: 3, letterSpacing: '.04em' }}>
-                added {relDate(c.addedAt)}
-              </div>
-            </div>
-            <span className={c.status === 'active' ? 'badge active' : 'badge gone'}>
-              ● {c.status === 'active' ? 'ACTIVE' : 'GONE'}
-            </span>
-          </button>
-        ))}
+              <span className={c.status === 'active' ? 'badge active' : 'badge gone'}>
+                ● {c.status === 'active' ? 'ACTIVE' : 'GONE'}
+              </span>
+            </button>
+          )
+        })}
         {!items.length && (
           <div style={{ marginTop: 40, textAlign: 'center', fontSize: 11, color: 'var(--t-mut)', letterSpacing: '.06em' }}>
             NOTHING HERE YET

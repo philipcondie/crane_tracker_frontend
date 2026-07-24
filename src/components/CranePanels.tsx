@@ -1,6 +1,6 @@
 import type { CSSProperties } from 'react'
 import type { CraneDetail } from '../types'
-import { fmtDate, fmtLatLng } from '../utils'
+import { fmtArea, fmtDate, fmtLatLng } from '../utils'
 import { PhotoBox, ThumbStrip } from './PhotoBits'
 
 /* ---------- detail ---------- */
@@ -32,7 +32,10 @@ export function DetailRail({ crane, photoIdx, onPrev, onNext, onContribute, onRe
         {crane.name}
       </div>
       <div style={{ fontSize: 10.5, color: 'var(--t-body)', lineHeight: 2.05, marginTop: 11, letterSpacing: '.04em' }}>
-        <div>AREA&nbsp;&nbsp;—&nbsp;&nbsp;{crane.city}{crane.neighborhood ? ` · ${crane.neighborhood}` : ''}</div>
+        <div>
+          AREA&nbsp;&nbsp;—&nbsp;&nbsp;
+          {fmtArea(crane.city, crane.neighborhood) ?? <span style={{ color: 'var(--t-mut)' }}>—</span>}
+        </div>
         <div>COORD —&nbsp;&nbsp;{fmtLatLng(crane.lat, crane.lng)}</div>
         <div>SEEN&nbsp;&nbsp;—&nbsp;&nbsp;{fmtDate(crane.addedAt)}</div>
         <div style={{ color: 'var(--t-mut)' }}>
@@ -102,7 +105,7 @@ export function DetailSheet({ crane, expanded, onToggle, photoIdx, onPrev, onNex
               {crane.name}
             </div>
             <div style={{ fontSize: 10, color: 'var(--t-body)', marginTop: 4, letterSpacing: '.04em' }}>
-              {crane.city} · {fmtDate(crane.addedAt)}
+              {[fmtArea(crane.city, crane.neighborhood), fmtDate(crane.addedAt)].filter(Boolean).join(' · ')}
             </div>
             <div
               className={crane.status === 'active' ? 'status-active' : 'status-gone'}

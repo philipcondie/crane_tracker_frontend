@@ -9,8 +9,9 @@ export interface CraneSummary {
   id: string
   name: string
   status: CraneStatus
-  city: string
-  neighborhood?: string
+  /** Null when geocoding fails or returns a partial address; never omitted. */
+  city: string | null
+  neighborhood: string | null
   /** ISO timestamp the crane was first logged; displayed as date-only. */
   addedAt: string
   lat: number

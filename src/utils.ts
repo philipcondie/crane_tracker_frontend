@@ -5,6 +5,17 @@ export function fmtLatLng(lat: number, lng: number): string {
 }
 
 /**
+ * Join city and neighborhood for display. The API returns explicit null for
+ * either field when geocoding fails or returns a partial address, so all four
+ * combinations are routine. Returns null when there's nothing to show, letting
+ * each caller decide between a placeholder and dropping the row.
+ */
+export function fmtArea(city: string | null, neighborhood: string | null): string | null {
+  const parts = [city, neighborhood].filter((p): p is string => Boolean(p?.trim()))
+  return parts.length ? parts.join(' · ') : null
+}
+
+/**
  * Parse an ISO string that may be date-only (YYYY-MM-DD) or a full timestamp.
  * A bare date is anchored at local noon so day-boundary math stays stable across
  * timezones; a full timestamp is parsed as-is.
