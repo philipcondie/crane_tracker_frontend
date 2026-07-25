@@ -1,6 +1,43 @@
 import type { CraneDetail, CraneStatus, CraneSummary } from '../types'
 
-const BASE_URL = import.meta.env.VITE_API_URL
+const CONFIGURED_BASE_URL = import.meta.env.VITE_API_URL
+
+export function normalizeApiBaseUrl(value: string | undefined): string {
+  const trimmed = value?.trim()
+  if (!trimmed) {
+    throw new Error('VITE_API_URL is not configured')
+  }
+  return trimmed.replace(/\/+$/, '')
+}
+
+function apiUrl(path: `/${string}`): string {
+  return `${normalizeApiBaseUrl(CONFIGURED_BASE_URL)}${path}`
+}
+
+type ApiCraneStatus = 'active' | 'inactive'
+
+interface ApiCraneSummary {
+  id: string
+  projectName: string | null
+  status: ApiCraneStatus
+  city: string | null
+  neighborhood: string | null
+  addedAt: string
+  lat: number
+  lng: number
+  photos: number
+  contribs: number
+}
+
+interface ApiCraneDetail extends ApiCraneSummary {
+  imgs: string[]
+  links: string[]
+}
+
+interface ApiCranesInBoundsResponse {
+  cranes: ApiCraneSummary[]
+  truncated: boolean
+}
 
 /** Geographic query window. north > south, east > west. */
 export interface Bounds {
@@ -23,7 +60,7 @@ interface CraneCreateBody {
   lat: number
   lng: number
   projectName: string | null
-  status: CraneStatus
+  status: ApiCraneStatus
 }
 
 /** Thrown on any non-2xx response so callers can distinguish API failures from network errors. */
@@ -45,26 +82,49 @@ async function parse<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>
 }
 
+function fromApiStatus(status: ApiCraneStatus): CraneStatus {
+  return status === 'active' ? 'active' : 'gone'
+}
+
+function toApiStatus(status: CraneStatus): ApiCraneStatus {
+  return status === 'active' ? 'active' : 'inactive'
+}
+
+/** Translate the backend's public wire shape into the UI's domain language. */
+function fromApiCraneSummary(crane: ApiCraneSummary): CraneSummary {
+  const { projectName, status, ...rest } = crane
+  return {
+    ...rest,
+    name: projectName?.trim() || 'Unnamed crane',
+    status: fromApiStatus(status),
+  }
+}
+
+function fromApiCraneDetail(crane: ApiCraneDetail): CraneDetail {
+  const { imgs, links, ...summary } = crane
+  return { ...fromApiCraneSummary(summary), imgs, links }
+}
+
 /** POST /cranes — create a crane, returns its summary. */
 export async function createCrane(input: NewCraneInput): Promise<CraneSummary> {
   const body: CraneCreateBody = {
     lat: input.lat,
     lng: input.lng,
     projectName: input.name.trim() || null,
-    status: input.status,
+    status: toApiStatus(input.status),
   }
-  const res = await fetch(`${BASE_URL}/cranes`, {
+  const res = await fetch(apiUrl('/cranes'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
-  return parse<CraneSummary>(res)
+  return fromApiCraneSummary(await parse<ApiCraneSummary>(res))
 }
 
 /** GET /cranes/{id} — full detail for a single crane. */
 export async function getCrane(id: string, signal?: AbortSignal): Promise<CraneDetail> {
-  const res = await fetch(`${BASE_URL}/cranes/${encodeURIComponent(id)}`, { signal })
-  return parse<CraneDetail>(res)
+  const res = await fetch(apiUrl(`/cranes/${encodeURIComponent(id)}`), { signal })
+  return fromApiCraneDetail(await parse<ApiCraneDetail>(res))
 }
 
 /**
@@ -88,6 +148,7 @@ export async function getCranesInBounds(
     east: String(bounds.east),
     west: String(bounds.west),
   })
-  const res = await fetch(`${BASE_URL}/cranes?${q}`, { signal })
-  return parse<CranesInBoundsResponse>(res)
+  const res = await fetch(apiUrl(`/cranes?${q}`), { signal })
+  const data = await parse<ApiCranesInBoundsResponse>(res)
+  return { cranes: data.cranes.map(fromApiCraneSummary), truncated: data.truncated }
 }

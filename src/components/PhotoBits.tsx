@@ -2,7 +2,7 @@ import type { ChangeEvent, CSSProperties } from 'react'
 import type { CraneDetail } from '../types'
 import { readFilesAsDataUrls } from '../utils'
 
-export function wrapIndex(idx: number, len: number): number {
+function wrapIndex(idx: number, len: number): number {
   return len ? ((idx % len) + len) % len : 0
 }
 

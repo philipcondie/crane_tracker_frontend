@@ -302,6 +302,11 @@ select.ct-in {
   padding: 12px;
 }
 
+.btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 .btn.round {
   border-radius: 8px;
 }

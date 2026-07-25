@@ -2,12 +2,14 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import L from 'leaflet'
 import 'leaflet.markercluster'
-import { createCrane, type Bounds } from '../api/client'
+import type { Bounds } from '../api/client'
 import { useCranesInBounds } from '../hooks/useCranesInBounds'
 import { useCraneDetail } from '../hooks/useCraneDetail'
+import { useCraneCreation } from '../hooks/useCraneCreation'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { fmtLatLng } from '../utils'
 import { clusterIcon, craneIcon, tempIcon } from '../map/icons'
+import { withoutCraneParam } from '../map/searchParams'
 import { SEATTLE_CENTER } from '../data/seed'
 import { PillNav } from '../components/PillNav'
 import { WelcomeOverlay } from '../components/WelcomeOverlay'
@@ -141,6 +143,7 @@ export default function MapPage() {
   const [cdraft, setCdraft] = useState<string[]>([])
   const [cLink, setCLink] = useState('')
   const [form, setForm] = useState<AddFormValues>({ name: '', note: '' })
+  const { creating, isCreating, createOnce } = useCraneCreation()
 
   const mapEl = useRef<HTMLDivElement>(null)
   const mapRef = useRef<L.Map | null>(null)
@@ -149,7 +152,6 @@ export default function MapPage() {
   const clusterRef = useRef<L.MarkerClusterGroup | null>(null)
   const tempMkRef = useRef<L.Marker | null>(null)
   const toastTimer = useRef<number | undefined>(undefined)
-
   // Latest values for Leaflet event handlers registered once on mount
   const panelRef = useRef(panel)
   panelRef.current = panel
@@ -219,6 +221,7 @@ export default function MapPage() {
   // Map bootstrap
   useEffect(() => {
     const map = L.map(mapEl.current!, { zoomControl: false })
+    const markers = markersRef.current
     let center: [number, number] = SEATTLE_CENTER
     let zoom = 13
     const latParam = Number(params.get('lat'))
@@ -260,6 +263,7 @@ export default function MapPage() {
     clusterRef.current = clusters
 
     map.on('click', (e: L.LeafletMouseEvent) => {
+      if (isCreating()) return
       const mode = panelRef.current
       if (mode === 'addhint' || mode === 'addform') moveTemp(e.latlng)
     })
@@ -283,7 +287,7 @@ export default function MapPage() {
       mapRef.current = null
       layersRef.current = null
       clusterRef.current = null
-      markersRef.current.clear()
+      markers.clear()
       tempMkRef.current = null
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -386,6 +390,7 @@ export default function MapPage() {
   }
 
   const startAdd = () => {
+    if (isCreating()) return
     const map = mapRef.current
     if (!map) return
     dropTemp(map.getCenter())
@@ -395,6 +400,7 @@ export default function MapPage() {
   }
 
   const cancelAdd = () => {
+    if (isCreating()) return
     removeTemp()
     setPanel('detail')
     setTemp(null)
@@ -404,12 +410,13 @@ export default function MapPage() {
   const submitCrane = async () => {
     if (!temp) return
     try {
-      const crane = await createCrane({
+      const crane = await createOnce({
         name: form.name,
         lat: temp.lat,
         lng: temp.lng,
         status: 'active',
       })
+      if (!crane) return
       // Insert before removing the temp marker: React commits both in one pass,
       // so the real pin is already on the map when the placeholder goes. Doing
       // it the other way leaves a gap until the refetch lands, which is the
@@ -431,6 +438,12 @@ export default function MapPage() {
       flash('COULD NOT ADD CRANE')
       console.error(err)
     }
+  }
+
+  const dismissDetailError = () => {
+    pendingCenterId.current = null
+    setSelId(null)
+    setParams(withoutCraneParam, { replace: true })
   }
 
   const openContribute = () => {
@@ -476,6 +489,7 @@ export default function MapPage() {
             mobile={isMobile}
             coords={tempCoords}
             values={form}
+            submitting={creating}
             onChange={setForm}
             draft={draft}
             onFiles={(urls) => setDraft((d) => [...d, ...urls].slice(0, 3))}
@@ -503,7 +517,7 @@ export default function MapPage() {
         // the fallback fabricates empty imgs/links, so silently rendering it
         // would show "5 PHOTOS" beside an empty gallery with no error shown.
         if (selId && detailError) {
-          return <DetailError mobile={isMobile} onDismiss={() => setSelId(null)} />
+          return <DetailError mobile={isMobile} onDismiss={dismissDetailError} />
         }
         if (selId && !shown && detailLoading) return <DetailLoading mobile={isMobile} />
         if (empty) return <EmptyPanel mobile={isMobile} onAdd={startAdd} onNearest={showNearest} />
@@ -547,7 +561,7 @@ export default function MapPage() {
   } else if (panel === 'addhint') sheetHeight = '184px'
   else sheetHeight = '78%'
 
-  const fabHidden = isMobile && panel !== 'detail'
+  const fabHidden = panel !== 'detail'
 
   return (
     <div className="map-page">

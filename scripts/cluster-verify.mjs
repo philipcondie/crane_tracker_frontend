@@ -1,14 +1,27 @@
 // Clustering verification. The real backend (localhost:8000) isn't running, so
 // GET /cranes is stubbed in-page with dense synthetic cranes around Seattle.
+import { existsSync, mkdirSync } from 'node:fs'
 import puppeteer from 'puppeteer-core'
 
-const BASE = 'http://localhost:5199'
-const OUT = '/tmp/crane-verify'
+const BASE = process.env.APP_URL ?? 'http://localhost:5199'
+const OUT = process.env.SCREENSHOT_DIR ?? '/tmp/crane-verify'
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const log = (...a) => console.log(...a)
+const chromeCandidates = [
+  process.env.CHROME_PATH,
+  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  '/usr/bin/google-chrome',
+  '/usr/bin/chromium',
+].filter(Boolean)
+const executablePath = chromeCandidates.find(existsSync)
+
+if (!executablePath) {
+  throw new Error('Chrome not found. Set CHROME_PATH to a Chrome or Chromium executable.')
+}
+mkdirSync(OUT, { recursive: true })
 
 const browser = await puppeteer.launch({
-  executablePath: '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  executablePath,
   headless: 'new',
   args: ['--no-sandbox', '--disable-gpu'],
 })

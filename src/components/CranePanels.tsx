@@ -347,6 +347,7 @@ interface AddFormProps {
   mobile: boolean
   coords: string
   values: AddFormValues
+  submitting: boolean
   onChange: (values: AddFormValues) => void
   draft: string[]
   onFiles: (urls: string[]) => void
@@ -355,7 +356,7 @@ interface AddFormProps {
   onCancel: () => void
 }
 
-export function AddFormPanel({ mobile, coords, values, onChange, draft, onFiles, onRemoveDraft, onSubmit, onCancel }: AddFormProps) {
+export function AddFormPanel({ mobile, coords, values, submitting, onChange, draft, onFiles, onRemoveDraft, onSubmit, onCancel }: AddFormProps) {
   const set = (patch: Partial<AddFormValues>) => onChange({ ...values, ...patch })
   const thumbW = mobile ? 78 : 74
   const thumbH = mobile ? 62 : 58
@@ -403,10 +404,19 @@ export function AddFormPanel({ mobile, coords, values, onChange, draft, onFiles,
       <div className="label" style={{ letterSpacing: '.05em', marginBottom: mobile ? 12 : 14 }}>
         LOCATION — {coords} (FROM THE PIN)
       </div>
-      <button className={mobile ? 'btn round btn-primary' : 'btn btn-primary'} onClick={onSubmit}>
-        SUBMIT CRANE
+      <button
+        className={mobile ? 'btn round btn-primary' : 'btn btn-primary'}
+        onClick={onSubmit}
+        disabled={submitting}
+      >
+        {submitting ? 'ADDING CRANE…' : 'SUBMIT CRANE'}
       </button>
-      <button className="btn btn-ghost" style={{ padding: 10 }} onClick={onCancel}>
+      <button
+        className="btn btn-ghost"
+        style={{ padding: 10 }}
+        onClick={onCancel}
+        disabled={submitting}
+      >
         CANCEL
       </button>
     </div>
