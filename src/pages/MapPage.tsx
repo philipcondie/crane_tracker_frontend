@@ -10,7 +10,7 @@ import { useIsMobile } from '../hooks/useIsMobile'
 import { fmtLatLng } from '../utils'
 import { clusterIcon, craneIcon, tempIcon } from '../map/icons'
 import { withoutCraneParam } from '../map/searchParams'
-import { SEATTLE_CENTER } from '../data/seed'
+import { US_OVERVIEW_CENTER, US_OVERVIEW_ZOOM } from '../data/seed'
 import { PillNav } from '../components/PillNav'
 import { WelcomeOverlay } from '../components/WelcomeOverlay'
 import {
@@ -160,6 +160,9 @@ export default function MapPage() {
   // are never re-bound. Routing through a ref keeps them calling the current
   // selectCrane instead of the closure captured at creation time.
   const selectCraneRef = useRef<(id: string) => void>(() => {})
+  // Installed by the map bootstrap effect. Selecting a crane is an explicit
+  // location choice, so it must retire any pending geolocation recenter.
+  const cancelGeoRef = useRef<() => void>(() => {})
 
   const flash = useCallback((msg: string) => {
     setToast(msg)
@@ -176,6 +179,7 @@ export default function MapPage() {
 
   const selectCrane = useCallback(
     (id: string) => {
+      cancelGeoRef.current()
       removeTemp()
       setSelId(id)
       setPanel('detail')
@@ -222,15 +226,54 @@ export default function MapPage() {
   useEffect(() => {
     const map = L.map(mapEl.current!, { zoomControl: false })
     const markers = markersRef.current
-    let center: [number, number] = SEATTLE_CENTER
-    let zoom = 13
+    // Deep links (?lat/lng, and ?crane handled elsewhere) are an explicit intent
+    // and always win. Absent one, we paint a continental-US overview immediately
+    // — never blocking first paint on geolocation — and fly to the user's real
+    // location if/when it resolves (see below).
+    let center: [number, number] = US_OVERVIEW_CENTER
+    let zoom = US_OVERVIEW_ZOOM
     const latParam = Number(params.get('lat'))
     const lngParam = Number(params.get('lng'))
-    if (Number.isFinite(latParam) && Number.isFinite(lngParam) && params.get('lat')) {
+    const hasDeepLink = Number.isFinite(latParam) && Number.isFinite(lngParam) && !!params.get('lat')
+    if (hasDeepLink) {
       center = [latParam, lngParam]
       zoom = Number(params.get('z')) || 13
     }
     map.setView(center, zoom)
+
+    // Geolocation: fly from the overview down to the user's location, but only if
+    // they haven't taken over navigation. `geoLatched` is our own-move guard so
+    // the flyTo we trigger doesn't count as a user interaction and cancel itself.
+    let geoActive = !hasDeepLink && 'geolocation' in navigator
+    let geoLatched = false
+    // Cancel the pending geo recenter the moment the user takes over navigation.
+    // `movestart` covers dragging, keyboard panning, and zooming. Our own flyTo
+    // also emits it, so geoLatched distinguishes that move from user navigation.
+    const cancelGeo = () => {
+      geoActive = false
+      if (geoLatched) map.stop()
+    }
+    const cancelGeoOnMove = () => {
+      if (!geoLatched) cancelGeo()
+    }
+    cancelGeoRef.current = cancelGeo
+    map.on('movestart', cancelGeoOnMove)
+    if (geoActive) {
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          // Between the request and its (async) resolution the user may have
+          // panned away — honor that and stay put.
+          if (!geoActive) return
+          geoLatched = true
+          map.flyTo([pos.coords.latitude, pos.coords.longitude], 13, { duration: 1.5 })
+        },
+        // Denied / unavailable / timed out: leave them on the overview to explore.
+        () => {
+          geoActive = false
+        },
+        { enableHighAccuracy: false, timeout: 10000, maximumAge: 300000 },
+      )
+    }
     const muted = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
       subdomains: 'abcd',
       maxZoom: 19,
@@ -271,6 +314,8 @@ export default function MapPage() {
     // — unless the viewport is numerically identical, which syncBounds filters.
     map.on('moveend', syncBounds)
     mapRef.current = map
+    // Dev-only handle so verification scripts can read center/zoom. Never in prod.
+    if (import.meta.env.DEV) (window as unknown as { __map?: L.Map }).__map = map
     layersRef.current = { muted, sat: satLayer }
     // Only strip the positional params here. `crane` is deliberately left in the
     // URL until its detail actually loads (see the recenter effect) so a failed
@@ -281,6 +326,11 @@ export default function MapPage() {
       syncBounds()
     }, 150)
     return () => {
+      // getCurrentPosition has no cancellation API. Mark this request inactive
+      // so a late callback (including StrictMode's first mount) cannot fly a
+      // Leaflet map after it has been removed.
+      geoActive = false
+      if (cancelGeoRef.current === cancelGeo) cancelGeoRef.current = () => {}
       window.clearTimeout(t)
       window.clearTimeout(toastTimer.current)
       map.remove()
