@@ -9,7 +9,7 @@ vi.mock('../api/client', () => ({
   createCrane: vi.fn(),
 }))
 
-const input = { name: 'Tower', lat: 47.6, lng: -122.3, status: 'active' as const }
+const input = { name: 'Tower', lat: 47.6, lng: -122.3 }
 const crane: CraneSummary = {
   id: 'crane-1',
   name: 'Tower',

@@ -1,5 +1,13 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { createCrane, getCrane, getCranesInBounds, normalizeApiBaseUrl } from './client'
+import {
+  ApiError,
+  DuplicateCraneError,
+  createCrane,
+  getCrane,
+  getCranesInBounds,
+  normalizeApiBaseUrl,
+  reportCraneGone,
+} from './client'
 
 const apiSummary = {
   id: '019f6854-fcc3-7831-b1ee-d642e12732cc',
@@ -90,7 +98,6 @@ describe('crane API contract adapter', () => {
       name: '  Harbor Tower  ',
       lat: apiSummary.lat,
       lng: apiSummary.lng,
-      status: 'gone',
     })
 
     const [, init] = fetchMock.mock.calls[0]
@@ -98,7 +105,63 @@ describe('crane API contract adapter', () => {
       lat: apiSummary.lat,
       lng: apiSummary.lng,
       projectName: 'Harbor Tower',
-      status: 'inactive',
+      overrideDuplicateWarning: false,
     })
+  })
+
+  it('raises DuplicateCraneError on a 409 so callers can offer "add anyway"', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(new Response('A crane already exists nearby', { status: 409 })),
+    )
+
+    const err = await createCrane({ name: 'Dup Tower', lat: 47.6, lng: -122.3 }).catch(
+      (e: unknown) => e,
+    )
+    expect(err).toBeInstanceOf(DuplicateCraneError)
+    expect(err).toBeInstanceOf(ApiError)
+    expect(err).toMatchObject({ status: 409, message: 'A crane already exists nearby' })
+  })
+
+  it('forwards overrideDuplicateWarning so a confirmed create bypasses the check', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ ...apiSummary, projectName: 'Dup Tower' }), {
+        status: 201,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await createCrane({
+      name: 'Dup Tower',
+      lat: apiSummary.lat,
+      lng: apiSummary.lng,
+      overrideDuplicateWarning: true,
+    })
+
+    const [, init] = fetchMock.mock.calls[0]
+    expect(JSON.parse(String(init?.body))).toMatchObject({ overrideDuplicateWarning: true })
+  })
+
+  it('POSTs a gone report to the crane report endpoint and tolerates a 204', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(reportCraneGone(apiSummary.id)).resolves.toBeUndefined()
+
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(String(url)).toMatch(new RegExp(`/cranes/${apiSummary.id}/report$`))
+    expect(init?.method).toBe('POST')
+  })
+
+  it('throws ApiError when a gone report is rejected', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(new Response('crane not found', { status: 404 })),
+    )
+
+    const err = await reportCraneGone(apiSummary.id).catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(ApiError)
+    expect(err).toMatchObject({ status: 404, message: 'crane not found' })
   })
 })

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import L from 'leaflet'
 import 'leaflet.markercluster'
-import type { Bounds } from '../api/client'
+import { DuplicateCraneError, reportCraneGone, type Bounds, type NewCraneInput } from '../api/client'
 import { useCranesInBounds } from '../hooks/useCranesInBounds'
 import { useCraneDetail } from '../hooks/useCraneDetail'
 import { useCraneCreation } from '../hooks/useCraneCreation'
@@ -13,6 +13,7 @@ import { withoutCraneParam } from '../map/searchParams'
 import { US_OVERVIEW_CENTER, US_OVERVIEW_ZOOM } from '../data/seed'
 import { PillNav } from '../components/PillNav'
 import { WelcomeOverlay } from '../components/WelcomeOverlay'
+import { DuplicateWarningOverlay } from '../components/DuplicateWarningOverlay'
 import {
   AddFormPanel,
   AddHintPanel,
@@ -30,10 +31,12 @@ type PanelMode = 'detail' | 'addhint' | 'addform' | 'contribute'
 
 const WELCOME_KEY = 'ct_seen_v1'
 
-// Contribute (photos/links) and status updates have no backend endpoints yet, so
-// their controls render disabled rather than claiming a success that never
-// persists. Flip to true once POST /contribute and PATCH /cranes/{id} exist.
-const WRITES_ENABLED = false
+// Write capabilities are gated per-endpoint: a control renders disabled until
+// its backend exists, so it never claims a success that won't persist.
+// Report-as-gone (POST /cranes/{id}/report) is live; contribute (photos/links)
+// has no endpoint yet — flip CONTRIBUTE_ENABLED once POST /contribute lands.
+const REPORT_ENABLED = true
+const CONTRIBUTE_ENABLED = false
 
 // How long the truncation banner lingers after results stop being truncated.
 // Comfortably longer than the 350ms fetch debounce in useCranesInBounds, so a
@@ -143,6 +146,10 @@ export default function MapPage() {
   const [cdraft, setCdraft] = useState<string[]>([])
   const [cLink, setCLink] = useState('')
   const [form, setForm] = useState<AddFormValues>({ name: '', note: '' })
+  // Set when a create is rejected with 409 (possible duplicate). Holds the exact
+  // input that was rejected — not the live form — so confirming re-submits what
+  // the backend actually flagged, even if the form is edited behind the modal.
+  const [dup, setDup] = useState<{ input: NewCraneInput; message: string } | null>(null)
   const { creating, isCreating, createOnce } = useCraneCreation()
 
   const mapEl = useRef<HTMLDivElement>(null)
@@ -152,6 +159,11 @@ export default function MapPage() {
   const clusterRef = useRef<L.MarkerClusterGroup | null>(null)
   const tempMkRef = useRef<L.Marker | null>(null)
   const toastTimer = useRef<number | undefined>(undefined)
+  // Crane ids this session has already reported as gone. A report is a vote, so
+  // one user casting it twice shouldn't skew the tally — this both blocks a
+  // double-click race (checked before the fetch commits state) and keeps the
+  // button from re-firing for a crane already voted on.
+  const reportedRef = useRef<Set<string>>(new Set())
   // Latest values for Leaflet event handlers registered once on mount
   const panelRef = useRef(panel)
   panelRef.current = panel
@@ -424,6 +436,19 @@ export default function MapPage() {
   const shown: CraneDetail | null =
     detail ?? (selSummary ? { ...selSummary, imgs: [], links: [] } : null)
 
+  // Whether reporting can act on the crane in the panel *right now*. Gated on
+  // shown.id === selId because during a slow detail fetch `detail` still holds
+  // the previously-selected crane: the panel would show crane A while selId is
+  // already B, and a report would otherwise be cast against the wrong crane.
+  // Requiring the match makes the button inert until display and selection agree.
+  const reportEnabled = REPORT_ENABLED && !!shown && shown.id === selId
+  // Separately: has this session already voted the shown crane gone. Kept apart
+  // from reportEnabled so the button can say "REPORT RECORDED" instead of
+  // regressing to "coming soon" — a report is a vote, so the crane often stays
+  // active and the button would otherwise re-enable/mislabel. reportedRef is a
+  // ref, but every successful report re-renders (toast + refetch token).
+  const reported = !!shown && reportedRef.current.has(shown.id)
+
   const inView = cranes.length
   // Empty-region CTA only when nothing is selected — a deep-linked crane can be
   // open while its viewport happens to return zero pins.
@@ -455,39 +480,61 @@ export default function MapPage() {
     setPanel('detail')
     setTemp(null)
     setDraft([])
+    setDup(null)
   }
 
-  const submitCrane = async () => {
-    if (!temp) return
+  // Shared tail for a create that succeeded — whether on the first try or after
+  // the user confirmed past a duplicate warning. Puts the real pin on the map,
+  // clears the add flow, and reconciles against the server.
+  const onCraneCreated = (crane: CraneSummary) => {
+    // Insert before removing the temp marker: React commits both in one pass,
+    // so the real pin is already on the map when the placeholder goes. Doing
+    // it the other way leaves a gap until the refetch lands, which is the
+    // flicker this avoids.
+    addOptimistic(crane)
+    removeTemp()
+    setDup(null)
+    setSelId(crane.id)
+    setPanel('detail')
+    setTemp(null)
+    setExpanded(true)
+    setDraft([])
+    setPhotoIdx(0)
+    // The map hasn't moved, so syncBounds alone would be a no-op — bump the
+    // token to refetch this same viewport, reconciling the optimistic pin
+    // against the server's list.
+    setRefetchToken((t) => t + 1)
+    flash('CRANE ADDED ✓')
+  }
+
+  // Runs a create attempt and routes its outcome. A 409 isn't a failure: it's
+  // the backend asking us to confirm, so we stash the rejected input and open
+  // the duplicate modal instead of flashing an error.
+  const attemptCreate = async (input: NewCraneInput) => {
     try {
-      const crane = await createOnce({
-        name: form.name,
-        lat: temp.lat,
-        lng: temp.lng,
-        status: 'active',
-      })
-      if (!crane) return
-      // Insert before removing the temp marker: React commits both in one pass,
-      // so the real pin is already on the map when the placeholder goes. Doing
-      // it the other way leaves a gap until the refetch lands, which is the
-      // flicker this avoids.
-      addOptimistic(crane)
-      removeTemp()
-      setSelId(crane.id)
-      setPanel('detail')
-      setTemp(null)
-      setExpanded(true)
-      setDraft([])
-      setPhotoIdx(0)
-      // The map hasn't moved, so syncBounds alone would be a no-op — bump the
-      // token to refetch this same viewport, reconciling the optimistic pin
-      // against the server's list.
-      setRefetchToken((t) => t + 1)
-      flash('CRANE ADDED ✓')
+      const crane = await createOnce(input)
+      if (!crane) return // a concurrent create is already in flight
+      onCraneCreated(crane)
     } catch (err) {
+      if (err instanceof DuplicateCraneError) {
+        setDup({ input, message: err.message })
+        return
+      }
       flash('COULD NOT ADD CRANE')
       console.error(err)
     }
+  }
+
+  const submitCrane = () => {
+    if (!temp) return
+    attemptCreate({ name: form.name, lat: temp.lat, lng: temp.lng })
+  }
+
+  // "Add Anyway" from the duplicate modal: re-submit the exact rejected input
+  // with the override set, so the backend skips its duplicate check this time.
+  const confirmDuplicate = () => {
+    if (!dup) return
+    attemptCreate({ ...dup.input, overrideDuplicateWarning: true })
   }
 
   const dismissDetailError = () => {
@@ -508,14 +555,37 @@ export default function MapPage() {
     setCdraft([])
     setCLink('')
     setPhotoIdx(0)
-    // Unreachable while WRITES_ENABLED is false, but don't claim success if it
-    // ever is reached before the endpoint lands.
+    // Unreachable while CONTRIBUTE_ENABLED is false, but don't claim success if
+    // it ever is reached before the endpoint lands.
     flash('NOT YET AVAILABLE')
   }
 
-  const handleReportGone = () => {
-    // TODO(backend): PATCH /cranes/{id} status once the update endpoint exists.
-    flash('NOT YET AVAILABLE')
+  const handleReportGone = async () => {
+    // Report the crane actually on screen, not selId: during a slow detail
+    // fetch `shown` can still be the previously-selected crane while selId has
+    // moved on. Guarding on shown.id === selId means we never cast a vote
+    // against a crane the user isn't looking at (mirrors the reportEnabled gate,
+    // which normally keeps this unreachable when they diverge).
+    const id = shown?.id
+    if (!id || id !== selId) return
+    // A report is a vote, not a state change: the backend flips the crane to
+    // gone only after enough distinct reports, so we don't optimistically touch
+    // its status — we acknowledge the vote and let the refetch surface whatever
+    // status the server now returns (unchanged, unless this report met the bar).
+    if (reportedRef.current.has(id)) return
+    reportedRef.current.add(id)
+    try {
+      await reportCraneGone(id)
+      // Same viewport, so a moveend won't fire — bump the token to refetch and
+      // pick up a status change if this report was the one that crossed it.
+      setRefetchToken((t) => t + 1)
+      flash('REPORT RECORDED ✓')
+    } catch (err) {
+      // Let the user try again: this vote never reached the server.
+      reportedRef.current.delete(id)
+      flash('COULD NOT SEND REPORT')
+      console.error(err)
+    }
   }
 
   const showNearest = () => {
@@ -582,7 +652,9 @@ export default function MapPage() {
             onNext={() => setPhotoIdx((i) => i + 1)}
             onContribute={openContribute}
             onReportGone={handleReportGone}
-            writesEnabled={WRITES_ENABLED}
+            contributeEnabled={CONTRIBUTE_ENABLED}
+            reportEnabled={reportEnabled}
+            reported={reported}
           />
         ) : (
           <DetailRail
@@ -592,7 +664,9 @@ export default function MapPage() {
             onNext={() => setPhotoIdx((i) => i + 1)}
             onContribute={openContribute}
             onReportGone={handleReportGone}
-            writesEnabled={WRITES_ENABLED}
+            contributeEnabled={CONTRIBUTE_ENABLED}
+            reportEnabled={reportEnabled}
+            reported={reported}
           />
         )
     }
@@ -683,6 +757,19 @@ export default function MapPage() {
         >
           {toast}
         </div>
+      )}
+
+      {dup && (
+        <DuplicateWarningOverlay
+          mobile={isMobile}
+          craneName={dup.input.name}
+          message={dup.message}
+          submitting={creating}
+          onConfirm={confirmDuplicate}
+          // Dismiss the warning but keep the pin and form intact, so the user
+          // lands back on the add form and can tweak or abandon it themselves.
+          onCancel={() => setDup(null)}
+        />
       )}
 
       {welcome && (

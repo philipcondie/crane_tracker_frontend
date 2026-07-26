@@ -52,7 +52,13 @@ export interface NewCraneInput {
   name: string
   lat: number
   lng: number
-  status: CraneStatus
+  /**
+   * Set once the user has seen and dismissed a possible-duplicate warning, to
+   * tell the backend to create the crane anyway. Absent/false on the first
+   * attempt, which is what lets the backend answer with a 409 (see
+   * DuplicateCraneError).
+   */
+  overrideDuplicateWarning?: boolean
 }
 
 /** Raw JSON body the create endpoint expects. */
@@ -60,7 +66,7 @@ interface CraneCreateBody {
   lat: number
   lng: number
   projectName: string | null
-  status: ApiCraneStatus
+  overrideDuplicateWarning: boolean
 }
 
 /** Thrown on any non-2xx response so callers can distinguish API failures from network errors. */
@@ -74,6 +80,19 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * The backend answered a create with 409: it thinks this crane may duplicate an
+ * existing one. Not a failure — a checkpoint. The user can re-submit with
+ * `overrideDuplicateWarning: true` to create it anyway. Modelled as its own type
+ * so callers branch on it structurally instead of sniffing status codes.
+ */
+export class DuplicateCraneError extends ApiError {
+  constructor(message: string) {
+    super(409, message)
+    this.name = 'DuplicateCraneError'
+  }
+}
+
 async function parse<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const body = await res.text().catch(() => '')
@@ -84,10 +103,6 @@ async function parse<T>(res: Response): Promise<T> {
 
 function fromApiStatus(status: ApiCraneStatus): CraneStatus {
   return status === 'active' ? 'active' : 'gone'
-}
-
-function toApiStatus(status: CraneStatus): ApiCraneStatus {
-  return status === 'active' ? 'active' : 'inactive'
 }
 
 /** Translate the backend's public wire shape into the UI's domain language. */
@@ -105,20 +120,45 @@ function fromApiCraneDetail(crane: ApiCraneDetail): CraneDetail {
   return { ...fromApiCraneSummary(summary), imgs, links }
 }
 
-/** POST /cranes — create a crane, returns its summary. */
+/**
+ * POST /cranes — create a crane, returns its summary. A 409 means the backend
+ * suspects a duplicate; it surfaces as DuplicateCraneError so the caller can
+ * confirm with the user and retry with `overrideDuplicateWarning: true`.
+ */
 export async function createCrane(input: NewCraneInput): Promise<CraneSummary> {
   const body: CraneCreateBody = {
     lat: input.lat,
     lng: input.lng,
     projectName: input.name.trim() || null,
-    status: toApiStatus(input.status),
+    overrideDuplicateWarning: input.overrideDuplicateWarning ?? false,
   }
   const res = await fetch(apiUrl('/cranes'), {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
+  if (res.status === 409) {
+    const msg = await res.text().catch(() => '')
+    throw new DuplicateCraneError(msg || 'This looks like it may already be on the map.')
+  }
   return fromApiCraneSummary(await parse<ApiCraneSummary>(res))
+}
+
+/**
+ * POST /cranes/{id}/report — cast a "this crane is gone" report. A report is a
+ * vote, not a state change: the backend tallies reports across users and only
+ * flips the crane's status once enough have come in, so this returns nothing
+ * (204) and callers must not assume the crane is now gone. Refetch to learn the
+ * current status.
+ */
+export async function reportCraneGone(id: string): Promise<void> {
+  const res = await fetch(apiUrl(`/cranes/${encodeURIComponent(id)}/report`), {
+    method: 'POST',
+  })
+  if (!res.ok) {
+    const body = await res.text().catch(() => '')
+    throw new ApiError(res.status, body || res.statusText)
+  }
 }
 
 /** GET /cranes/{id} — full detail for a single crane. */

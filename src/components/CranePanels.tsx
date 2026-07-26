@@ -5,6 +5,23 @@ import { PhotoBox, ThumbStrip } from './PhotoBits'
 
 /* ---------- detail ---------- */
 
+/**
+ * Resolves the report-as-gone button's copy from its two independent inputs.
+ * `reported` (this session already voted) wins over `reportEnabled` (endpoint
+ * live): a recorded vote should never regress to "coming soon" just because the
+ * button is now disabled. The button is inert whenever it can't act, but only
+ * the endpoint-off case explains itself as unavailable.
+ */
+function reportButton(reportEnabled: boolean, reported: boolean): {
+  label: string
+  disabled: boolean
+  title: string | undefined
+} {
+  if (reported) return { label: 'REPORT RECORDED ✓', disabled: true, title: undefined }
+  if (reportEnabled) return { label: 'REPORT AS GONE', disabled: false, title: undefined }
+  return { label: 'REPORT AS GONE — COMING SOON', disabled: true, title: 'Not yet available' }
+}
+
 interface DetailProps {
   crane: CraneDetail
   photoIdx: number
@@ -12,11 +29,23 @@ interface DetailProps {
   onNext: () => void
   onContribute: () => void
   onReportGone: () => void
-  /** False until the contribute/status endpoints exist; disables both writes. */
-  writesEnabled: boolean
+  /** Photo/info contribute endpoint isn't live yet; disables that button. */
+  contributeEnabled: boolean
+  /**
+   * Whether the report-as-gone button can act right now. False covers two
+   * unrelated cases — the endpoint isn't live, or the shown crane is out of
+   * sync with the selection — neither of which should read as "already voted".
+   */
+  reportEnabled: boolean
+  /**
+   * This session has already voted this crane gone. Distinct from
+   * `reportEnabled`: the vote succeeded, the endpoint exists, and the button
+   * should say so rather than fall back to "coming soon".
+   */
+  reported: boolean
 }
 
-export function DetailRail({ crane, photoIdx, onPrev, onNext, onContribute, onReportGone, writesEnabled }: DetailProps) {
+export function DetailRail({ crane, photoIdx, onPrev, onNext, onContribute, onReportGone, contributeEnabled, reportEnabled, reported }: DetailProps) {
   return (
     <div className="panel-col">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
@@ -47,22 +76,25 @@ export function DetailRail({ crane, photoIdx, onPrev, onNext, onContribute, onRe
       <button
         className="btn btn-outline"
         onClick={onContribute}
-        disabled={!writesEnabled}
-        title={writesEnabled ? undefined : 'Not yet available'}
+        disabled={!contributeEnabled}
+        title={contributeEnabled ? undefined : 'Not yet available'}
       >
-        {writesEnabled ? '＋ ADD PHOTO / INFO' : '＋ ADD PHOTO / INFO — COMING SOON'}
+        {contributeEnabled ? '＋ ADD PHOTO / INFO' : '＋ ADD PHOTO / INFO — COMING SOON'}
       </button>
-      {crane.status === 'active' && (
-        <button
-          className="btn btn-danger"
-          style={{ marginTop: 9 }}
-          onClick={onReportGone}
-          disabled={!writesEnabled}
-          title={writesEnabled ? undefined : 'Not yet available'}
-        >
-          {writesEnabled ? 'REPORT AS GONE' : 'REPORT AS GONE — COMING SOON'}
-        </button>
-      )}
+      {crane.status === 'active' && (() => {
+        const b = reportButton(reportEnabled, reported)
+        return (
+          <button
+            className="btn btn-danger"
+            style={{ marginTop: 9 }}
+            onClick={onReportGone}
+            disabled={b.disabled}
+            title={b.title}
+          >
+            {b.label}
+          </button>
+        )
+      })()}
     </div>
   )
 }
@@ -87,7 +119,7 @@ interface DetailSheetProps extends DetailProps {
   onToggle: () => void
 }
 
-export function DetailSheet({ crane, expanded, onToggle, photoIdx, onPrev, onNext, onContribute, onReportGone, writesEnabled }: DetailSheetProps) {
+export function DetailSheet({ crane, expanded, onToggle, photoIdx, onPrev, onNext, onContribute, onReportGone, contributeEnabled, reportEnabled, reported }: DetailSheetProps) {
   const cover = crane.imgs.length ? crane.imgs[0] : null
   return (
     <div style={{ padding: '12px 16px 18px', height: '100%', overflow: 'auto' }}>
@@ -127,22 +159,25 @@ export function DetailSheet({ crane, expanded, onToggle, photoIdx, onPrev, onNex
             className="btn round btn-outline"
             style={{ marginTop: 12, padding: 13 }}
             onClick={onContribute}
-            disabled={!writesEnabled}
-            title={writesEnabled ? undefined : 'Not yet available'}
+            disabled={!contributeEnabled}
+            title={contributeEnabled ? undefined : 'Not yet available'}
           >
-            {writesEnabled ? '＋ ADD PHOTO / INFO' : '＋ ADD PHOTO / INFO — COMING SOON'}
+            {contributeEnabled ? '＋ ADD PHOTO / INFO' : '＋ ADD PHOTO / INFO — COMING SOON'}
           </button>
-          {crane.status === 'active' && (
-            <button
-              className="btn round btn-danger"
-              style={{ marginTop: 9, padding: 11 }}
-              onClick={onReportGone}
-              disabled={!writesEnabled}
-              title={writesEnabled ? undefined : 'Not yet available'}
-            >
-              {writesEnabled ? 'REPORT AS GONE' : 'REPORT AS GONE — COMING SOON'}
-            </button>
-          )}
+          {crane.status === 'active' && (() => {
+            const b = reportButton(reportEnabled, reported)
+            return (
+              <button
+                className="btn round btn-danger"
+                style={{ marginTop: 9, padding: 11 }}
+                onClick={onReportGone}
+                disabled={b.disabled}
+                title={b.title}
+              >
+                {b.label}
+              </button>
+            )
+          })()}
         </div>
       ) : (
         <div style={{ textAlign: 'center', fontSize: 9, color: 'var(--t-mut)', marginTop: 12, letterSpacing: '.06em' }}>
