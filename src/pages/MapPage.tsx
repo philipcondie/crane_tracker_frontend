@@ -9,6 +9,7 @@ import { useCraneCreation } from '../hooks/useCraneCreation'
 import { useIsMobile } from '../hooks/useIsMobile'
 import { fmtLatLng } from '../utils'
 import { clusterIcon, craneIcon, tempIcon } from '../map/icons'
+import { CARTO_ATTRIBUTION, cartoRasterTileUrl } from '../map/basemaps'
 import { withoutCraneParam } from '../map/searchParams'
 import { US_OVERVIEW_CENTER, US_OVERVIEW_ZOOM } from '../data/seed'
 import { PillNav } from '../components/PillNav'
@@ -286,10 +287,10 @@ export default function MapPage() {
         { enableHighAccuracy: false, timeout: 10000, maximumAge: 300000 },
       )
     }
-    const muted = L.tileLayer('https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png', {
+    const muted = L.tileLayer(cartoRasterTileUrl(import.meta.env.VITE_CARTO_BASEMAP_KEY), {
       subdomains: 'abcd',
       maxZoom: 19,
-      attribution: '© OpenStreetMap, © CARTO',
+      attribution: CARTO_ATTRIBUTION,
     })
     const satLayer = L.tileLayer(
       'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
