@@ -1,4 +1,4 @@
-import type { CraneDetail, CraneStatus, CraneSummary } from '../types'
+import type { CraneDetail, CranePhoto, CraneStatus, CraneSummary } from '../types'
 
 const CONFIGURED_BASE_URL = import.meta.env.VITE_API_URL
 
@@ -30,7 +30,7 @@ interface ApiCraneSummary {
 }
 
 interface ApiCraneDetail extends ApiCraneSummary {
-  imgs: string[]
+  photoItems: CranePhoto[]
   links: string[]
 }
 
@@ -38,6 +38,8 @@ interface ApiCranesInBoundsResponse {
   cranes: ApiCraneSummary[]
   truncated: boolean
 }
+
+export type UploadedPhoto = CranePhoto
 
 /** Geographic query window. north > south, east > west. */
 export interface Bounds {
@@ -116,8 +118,9 @@ function fromApiCraneSummary(crane: ApiCraneSummary): CraneSummary {
 }
 
 function fromApiCraneDetail(crane: ApiCraneDetail): CraneDetail {
-  const { imgs, links, ...summary } = crane
-  return { ...fromApiCraneSummary(summary), imgs, links }
+  const { photoItems, links, ...summary } = crane
+  const imgs = photoItems.flatMap((photo) => photo.url ? [photo.url] : [])
+  return { ...fromApiCraneSummary(summary), imgs, photoItems, links }
 }
 
 /**
@@ -159,6 +162,20 @@ export async function reportCraneGone(id: string): Promise<void> {
     const body = await res.text().catch(() => '')
     throw new ApiError(res.status, body || res.statusText)
   }
+}
+
+/**
+ * POST /cranes/{id}/photos — upload one photo. Do not set Content-Type here:
+ * fetch adds the multipart boundary generated for this FormData body.
+ */
+export async function uploadCranePhoto(id: string, photo: File): Promise<UploadedPhoto> {
+  const body = new FormData()
+  body.append('photo', photo)
+  const res = await fetch(apiUrl(`/cranes/${encodeURIComponent(id)}/photos`), {
+    method: 'POST',
+    body,
+  })
+  return parse<UploadedPhoto>(res)
 }
 
 /** GET /cranes/{id} — full detail for a single crane. */

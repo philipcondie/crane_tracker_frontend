@@ -2,7 +2,14 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import L from 'leaflet'
 import 'leaflet.markercluster'
-import { DuplicateCraneError, reportCraneGone, type Bounds, type NewCraneInput } from '../api/client'
+import {
+  ApiError,
+  DuplicateCraneError,
+  reportCraneGone,
+  uploadCranePhoto,
+  type Bounds,
+  type NewCraneInput,
+} from '../api/client'
 import { useCranesInBounds } from '../hooks/useCranesInBounds'
 import { useCraneDetail } from '../hooks/useCraneDetail'
 import { useCraneCreation } from '../hooks/useCraneCreation'
@@ -25,7 +32,7 @@ import {
   EmptyPanel,
   type AddFormValues,
 } from '../components/CranePanels'
-import type { CraneDetail, CraneSummary } from '../types'
+import type { CraneDetail, CraneSummary, PhotoDraft } from '../types'
 
 type PanelMode = 'detail' | 'addhint' | 'addform' | 'contribute'
 
@@ -33,10 +40,9 @@ const WELCOME_KEY = 'ct_seen_v1'
 
 // Write capabilities are gated per-endpoint: a control renders disabled until
 // its backend exists, so it never claims a success that won't persist.
-// Report-as-gone (POST /cranes/{id}/report) is live; contribute (photos/links)
-// has no endpoint yet — flip CONTRIBUTE_ENABLED once POST /contribute lands.
+// Report-as-gone and photo uploads are both backed by live endpoints.
 const REPORT_ENABLED = true
-const CONTRIBUTE_ENABLED = false
+const CONTRIBUTE_ENABLED = true
 
 // How long the truncation banner lingers after results stop being truncated.
 // Comfortably longer than the 350ms fetch debounce in useCranesInBounds, so a
@@ -73,6 +79,36 @@ function nearestTo(lat: number, lng: number, cranes: CraneSummary[]): CraneSumma
     }
   }
   return best
+}
+
+interface UploadResult {
+  succeeded: number
+  failed: PhotoDraft[]
+  firstError: unknown
+}
+
+/** The backend accepts one photo per request, so a three-photo batch fans out. */
+async function uploadPhotos(craneId: string, drafts: PhotoDraft[]): Promise<UploadResult> {
+  const results = await Promise.allSettled(
+    drafts.map((draft) => uploadCranePhoto(craneId, draft.file)),
+  )
+  const failed = drafts.filter((_, i) => results[i].status === 'rejected')
+  const firstRejected = results.find((result) => result.status === 'rejected')
+  return {
+    succeeded: drafts.length - failed.length,
+    failed,
+    firstError: firstRejected?.status === 'rejected' ? firstRejected.reason : null,
+  }
+}
+
+function uploadErrorMessage(error: unknown): string {
+  if (!(error instanceof ApiError)) return 'PHOTO UPLOAD FAILED'
+  if (error.status === 404) return 'CRANE NOT FOUND'
+  if (error.status === 413) return 'PHOTO EXCEEDS 10 MB'
+  if (error.status === 415) return 'PHOTO TYPE NOT SUPPORTED'
+  if (error.status === 422) return 'PHOTO FILE IS INVALID'
+  if (error.status === 503) return 'PHOTO STORAGE UNAVAILABLE'
+  return 'PHOTO UPLOAD FAILED'
 }
 
 export default function MapPage() {
@@ -124,7 +160,11 @@ export default function MapPage() {
 
   const [selId, setSelId] = useState<string | null>(() => params.get('crane'))
   // Full detail for the selected crane (imgs/links); summary is the fallback header.
-  const { crane: detail, loading: detailLoading, error: detailError } = useCraneDetail(selId)
+  const [detailRefetchToken, setDetailRefetchToken] = useState(0)
+  const { crane: detail, loading: detailLoading, error: detailError } = useCraneDetail(
+    selId,
+    detailRefetchToken,
+  )
 
   // A crane opened via ?crane={id} needs the map centered on it once its coords
   // arrive. This holds that pending id; cleared after the one-shot recenter so
@@ -142,14 +182,20 @@ export default function MapPage() {
   const [toast, setToast] = useState('')
   const [welcome, setWelcome] = useState(() => !seenWelcome())
   const [photoIdx, setPhotoIdx] = useState(0)
-  const [draft, setDraft] = useState<string[]>([])
-  const [cdraft, setCdraft] = useState<string[]>([])
-  const [cLink, setCLink] = useState('')
-  const [form, setForm] = useState<AddFormValues>({ name: '', note: '' })
+  const [draft, setDraft] = useState<PhotoDraft[]>([])
+  const [cdraft, setCdraft] = useState<PhotoDraft[]>([])
+  const [processingDraft, setProcessingDraft] = useState(false)
+  const [processingContributionDraft, setProcessingContributionDraft] = useState(false)
+  const [uploadingContribution, setUploadingContribution] = useState(false)
+  const [form, setForm] = useState<AddFormValues>({ name: '' })
   // Set when a create is rejected with 409 (possible duplicate). Holds the exact
   // input that was rejected — not the live form — so confirming re-submits what
   // the backend actually flagged, even if the form is edited behind the modal.
-  const [dup, setDup] = useState<{ input: NewCraneInput; message: string } | null>(null)
+  const [dup, setDup] = useState<{
+    input: NewCraneInput
+    message: string
+    photos: PhotoDraft[]
+  } | null>(null)
   const { creating, isCreating, createOnce } = useCraneCreation()
 
   const mapEl = useRef<HTMLDivElement>(null)
@@ -434,7 +480,7 @@ export default function MapPage() {
   // prefer the fetched detail, fall back to the summary while detail loads.
   const selSummary: CraneSummary | undefined = cranes.find((c) => c.id === selId)
   const shown: CraneDetail | null =
-    detail ?? (selSummary ? { ...selSummary, imgs: [], links: [] } : null)
+    detail ?? (selSummary ? { ...selSummary, imgs: [], photoItems: [], links: [] } : null)
 
   // Whether reporting can act on the crane in the panel *right now*. Gated on
   // shown.id === selId because during a slow detail fetch `detail` still holds
@@ -442,6 +488,7 @@ export default function MapPage() {
   // already B, and a report would otherwise be cast against the wrong crane.
   // Requiring the match makes the button inert until display and selection agree.
   const reportEnabled = REPORT_ENABLED && !!shown && shown.id === selId
+  const contributeEnabled = CONTRIBUTE_ENABLED && !!shown && shown.id === selId
   // Separately: has this session already voted the shown crane gone. Kept apart
   // from reportEnabled so the button can say "REPORT RECORDED" instead of
   // regressing to "coming soon" — a report is a vote, so the crane often stays
@@ -471,15 +518,17 @@ export default function MapPage() {
     dropTemp(map.getCenter())
     setPanel('addhint')
     setDraft([])
-    setForm({ name: '', note: '' })
+    setProcessingDraft(false)
+    setForm({ name: '' })
   }
 
   const cancelAdd = () => {
-    if (isCreating()) return
+    if (isCreating() || processingDraft) return
     removeTemp()
     setPanel('detail')
     setTemp(null)
     setDraft([])
+    setProcessingDraft(false)
     setDup(null)
   }
 
@@ -504,20 +553,36 @@ export default function MapPage() {
     // token to refetch this same viewport, reconciling the optimistic pin
     // against the server's list.
     setRefetchToken((t) => t + 1)
-    flash('CRANE ADDED ✓')
   }
 
   // Runs a create attempt and routes its outcome. A 409 isn't a failure: it's
   // the backend asking us to confirm, so we stash the rejected input and open
   // the duplicate modal instead of flashing an error.
-  const attemptCreate = async (input: NewCraneInput) => {
+  const attemptCreate = async (input: NewCraneInput, photos: PhotoDraft[]) => {
     try {
       const crane = await createOnce(input)
       if (!crane) return // a concurrent create is already in flight
       onCraneCreated(crane)
+      if (!photos.length) {
+        flash('CRANE ADDED ✓')
+        return
+      }
+
+      const result = await uploadPhotos(crane.id, photos)
+      if (result.succeeded) {
+        setRefetchToken((t) => t + 1)
+        setDetailRefetchToken((t) => t + 1)
+      }
+      if (!result.failed.length) {
+        flash(`CRANE + ${result.succeeded} PHOTO${result.succeeded === 1 ? '' : 'S'} ADDED ✓`)
+      } else if (result.succeeded) {
+        flash(`${result.succeeded} PHOTOS ADDED · ${result.failed.length} FAILED`)
+      } else {
+        flash(`CRANE ADDED · ${uploadErrorMessage(result.firstError)}`)
+      }
     } catch (err) {
       if (err instanceof DuplicateCraneError) {
-        setDup({ input, message: err.message })
+        setDup({ input, message: err.message, photos })
         return
       }
       flash('COULD NOT ADD CRANE')
@@ -526,15 +591,15 @@ export default function MapPage() {
   }
 
   const submitCrane = () => {
-    if (!temp) return
-    attemptCreate({ name: form.name, lat: temp.lat, lng: temp.lng })
+    if (!temp || processingDraft) return
+    attemptCreate({ name: form.name, lat: temp.lat, lng: temp.lng }, draft)
   }
 
   // "Add Anyway" from the duplicate modal: re-submit the exact rejected input
   // with the override set, so the backend skips its duplicate check this time.
   const confirmDuplicate = () => {
     if (!dup) return
-    attemptCreate({ ...dup.input, overrideDuplicateWarning: true })
+    attemptCreate({ ...dup.input, overrideDuplicateWarning: true }, dup.photos)
   }
 
   const dismissDetailError = () => {
@@ -544,20 +609,41 @@ export default function MapPage() {
   }
 
   const openContribute = () => {
+    if (!contributeEnabled) return
     setPanel('contribute')
     setCdraft([])
-    setCLink('')
+    setProcessingContributionDraft(false)
   }
 
-  const submitContribute = () => {
-    // TODO(backend): POST photos/links to a contribute endpoint once it exists.
-    setPanel('detail')
-    setCdraft([])
-    setCLink('')
-    setPhotoIdx(0)
-    // Unreachable while CONTRIBUTE_ENABLED is false, but don't claim success if
-    // it ever is reached before the endpoint lands.
-    flash('NOT YET AVAILABLE')
+  const submitContribute = async () => {
+    const id = shown?.id
+    if (
+      !id ||
+      id !== selId ||
+      !cdraft.length ||
+      uploadingContribution ||
+      processingContributionDraft
+    ) return
+    setUploadingContribution(true)
+    try {
+      const result = await uploadPhotos(id, cdraft)
+      setCdraft(result.failed)
+      if (result.succeeded) {
+        setRefetchToken((t) => t + 1)
+        setDetailRefetchToken((t) => t + 1)
+        setPhotoIdx(0)
+      }
+      if (!result.failed.length) {
+        setPanel('detail')
+        flash(`${result.succeeded} PHOTO${result.succeeded === 1 ? '' : 'S'} ADDED ✓`)
+      } else if (result.succeeded) {
+        flash(`${result.succeeded} ADDED · ${result.failed.length} FAILED — RETRY`)
+      } else {
+        flash(uploadErrorMessage(result.firstError))
+      }
+    } finally {
+      setUploadingContribution(false)
+    }
   }
 
   const handleReportGone = async () => {
@@ -612,8 +698,10 @@ export default function MapPage() {
             submitting={creating}
             onChange={setForm}
             draft={draft}
-            onFiles={(urls) => setDraft((d) => [...d, ...urls].slice(0, 3))}
+            onFiles={(files) => setDraft((d) => [...d, ...files].slice(0, 3))}
             onRemoveDraft={(i) => setDraft((d) => d.filter((_, j) => j !== i))}
+            processingPhotos={processingDraft}
+            onProcessingPhotosChange={setProcessingDraft}
             onSubmit={submitCrane}
             onCancel={cancelAdd}
           />
@@ -624,10 +712,11 @@ export default function MapPage() {
             mobile={isMobile}
             craneName={shown.name}
             draft={cdraft}
-            onFiles={(urls) => setCdraft((d) => [...d, ...urls].slice(0, 3))}
+            onFiles={(files) => setCdraft((d) => [...d, ...files].slice(0, 3))}
             onRemoveDraft={(i) => setCdraft((d) => d.filter((_, j) => j !== i))}
-            link={cLink}
-            onLinkChange={setCLink}
+            processingPhotos={processingContributionDraft}
+            onProcessingPhotosChange={setProcessingContributionDraft}
+            submitting={uploadingContribution}
             onSubmit={submitContribute}
             onBack={() => setPanel('detail')}
           />
@@ -652,7 +741,7 @@ export default function MapPage() {
             onNext={() => setPhotoIdx((i) => i + 1)}
             onContribute={openContribute}
             onReportGone={handleReportGone}
-            contributeEnabled={CONTRIBUTE_ENABLED}
+            contributeEnabled={contributeEnabled}
             reportEnabled={reportEnabled}
             reported={reported}
           />
@@ -664,7 +753,7 @@ export default function MapPage() {
             onNext={() => setPhotoIdx((i) => i + 1)}
             onContribute={openContribute}
             onReportGone={handleReportGone}
-            contributeEnabled={CONTRIBUTE_ENABLED}
+            contributeEnabled={contributeEnabled}
             reportEnabled={reportEnabled}
             reported={reported}
           />

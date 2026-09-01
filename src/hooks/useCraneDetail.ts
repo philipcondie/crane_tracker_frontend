@@ -12,7 +12,7 @@ interface State {
  * Loads the full CraneDetail for a selected crane. Pass `null` when nothing is
  * selected. Aborts an in-flight fetch if the selection changes before it resolves.
  */
-export function useCraneDetail(id: string | null): State {
+export function useCraneDetail(id: string | null, refreshToken = 0): State {
   const [state, setState] = useState<State>({ crane: null, loading: false, error: null })
 
   useEffect(() => {
@@ -30,7 +30,7 @@ export function useCraneDetail(id: string | null): State {
         setState({ crane: null, loading: false, error: message })
       })
     return () => controller.abort()
-  }, [id])
+  }, [id, refreshToken])
 
   return state
 }

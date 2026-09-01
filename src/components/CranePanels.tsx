@@ -1,5 +1,5 @@
 import type { CSSProperties } from 'react'
-import type { CraneDetail } from '../types'
+import type { CraneDetail, PhotoDraft } from '../types'
 import { fmtArea, fmtDate, fmtLatLng } from '../utils'
 import { PhotoBox, ThumbStrip } from './PhotoBits'
 
@@ -29,7 +29,7 @@ interface DetailProps {
   onNext: () => void
   onContribute: () => void
   onReportGone: () => void
-  /** Photo/info contribute endpoint isn't live yet; disables that button. */
+  /** Whether the selected crane can accept a photo upload right now. */
   contributeEnabled: boolean
   /**
    * Whether the report-as-gone button can act right now. False covers two
@@ -79,7 +79,7 @@ export function DetailRail({ crane, photoIdx, onPrev, onNext, onContribute, onRe
         disabled={!contributeEnabled}
         title={contributeEnabled ? undefined : 'Not yet available'}
       >
-        {contributeEnabled ? '＋ ADD PHOTO / INFO' : '＋ ADD PHOTO / INFO — COMING SOON'}
+        {contributeEnabled ? '＋ ADD PHOTOS' : '＋ ADD PHOTOS — UNAVAILABLE'}
       </button>
       {crane.status === 'active' && (() => {
         const b = reportButton(reportEnabled, reported)
@@ -162,7 +162,7 @@ export function DetailSheet({ crane, expanded, onToggle, photoIdx, onPrev, onNex
             disabled={!contributeEnabled}
             title={contributeEnabled ? undefined : 'Not yet available'}
           >
-            {contributeEnabled ? '＋ ADD PHOTO / INFO' : '＋ ADD PHOTO / INFO — COMING SOON'}
+            {contributeEnabled ? '＋ ADD PHOTOS' : '＋ ADD PHOTOS — UNAVAILABLE'}
           </button>
           {crane.status === 'active' && (() => {
             const b = reportButton(reportEnabled, reported)
@@ -375,7 +375,6 @@ export function AddHintPanel({ mobile, coords, onPlace, onCancel }: AddHintProps
 
 export interface AddFormValues {
   name: string
-  note: string
 }
 
 interface AddFormProps {
@@ -384,14 +383,16 @@ interface AddFormProps {
   values: AddFormValues
   submitting: boolean
   onChange: (values: AddFormValues) => void
-  draft: string[]
-  onFiles: (urls: string[]) => void
+  draft: PhotoDraft[]
+  onFiles: (drafts: PhotoDraft[]) => void
   onRemoveDraft: (i: number) => void
+  processingPhotos: boolean
+  onProcessingPhotosChange: (processing: boolean) => void
   onSubmit: () => void
   onCancel: () => void
 }
 
-export function AddFormPanel({ mobile, coords, values, submitting, onChange, draft, onFiles, onRemoveDraft, onSubmit, onCancel }: AddFormProps) {
+export function AddFormPanel({ mobile, coords, values, submitting, onChange, draft, onFiles, onRemoveDraft, processingPhotos, onProcessingPhotosChange, onSubmit, onCancel }: AddFormProps) {
   const set = (patch: Partial<AddFormValues>) => onChange({ ...values, ...patch })
   const thumbW = mobile ? 78 : 74
   const thumbH = mobile ? 62 : 58
@@ -409,13 +410,20 @@ export function AddFormPanel({ mobile, coords, values, submitting, onChange, dra
           <span className="panel-title" style={{ fontSize: 18 }}>
             New crane
           </span>
-          <button style={{ fontSize: 14, color: 'var(--t-mut)' }} onClick={onCancel} aria-label="Close">
+          <button style={{ fontSize: 14, color: 'var(--t-mut)' }} onClick={onCancel} disabled={submitting || processingPhotos} aria-label="Close">
             ✕
           </button>
         </div>
       )}
       <div className="label">PHOTOS — {draft.length} / 3</div>
-      <ThumbStrip imgs={draft} onFiles={onFiles} onRemove={onRemoveDraft} w={thumbW} h={thumbH} />
+      <ThumbStrip
+        drafts={draft}
+        onFiles={onFiles}
+        onRemove={onRemoveDraft}
+        onProcessingChange={onProcessingPhotosChange}
+        w={thumbW}
+        h={thumbH}
+      />
       {!mobile && <div className="label">PROJECT NAME / NICKNAME</div>}
       <input
         className="ct-in"
@@ -424,33 +432,21 @@ export function AddFormPanel({ mobile, coords, values, submitting, onChange, dra
         onChange={(e) => set({ name: e.target.value })}
         style={{ marginBottom: mobile ? 10 : 14 }}
       />
-      {!mobile && (
-        <>
-          <div className="label">ARTICLE LINK / NOTE (OPTIONAL)</div>
-          <input
-            className="ct-in"
-            placeholder="https:// …"
-            value={values.note}
-            onChange={(e) => set({ note: e.target.value })}
-            style={{ marginBottom: 16 }}
-          />
-        </>
-      )}
       <div className="label" style={{ letterSpacing: '.05em', marginBottom: mobile ? 12 : 14 }}>
         LOCATION — {coords} (FROM THE PIN)
       </div>
       <button
         className={mobile ? 'btn round btn-primary' : 'btn btn-primary'}
         onClick={onSubmit}
-        disabled={submitting}
+        disabled={submitting || processingPhotos}
       >
-        {submitting ? 'ADDING CRANE…' : 'SUBMIT CRANE'}
+        {processingPhotos ? 'PROCESSING PHOTO…' : submitting ? 'ADDING CRANE…' : 'SUBMIT CRANE'}
       </button>
       <button
         className="btn btn-ghost"
         style={{ padding: 10 }}
         onClick={onCancel}
-        disabled={submitting}
+        disabled={submitting || processingPhotos}
       >
         CANCEL
       </button>
@@ -463,39 +459,33 @@ export function AddFormPanel({ mobile, coords, values, submitting, onChange, dra
 interface ContributeProps {
   mobile: boolean
   craneName: string
-  draft: string[]
-  onFiles: (urls: string[]) => void
+  draft: PhotoDraft[]
+  onFiles: (drafts: PhotoDraft[]) => void
   onRemoveDraft: (i: number) => void
-  link: string
-  onLinkChange: (v: string) => void
+  processingPhotos: boolean
+  onProcessingPhotosChange: (processing: boolean) => void
+  submitting: boolean
   onSubmit: () => void
   onBack: () => void
 }
 
-export function ContributePanel({ mobile, craneName, draft, onFiles, onRemoveDraft, link, onLinkChange, onSubmit, onBack }: ContributeProps) {
+export function ContributePanel({ mobile, craneName, draft, onFiles, onRemoveDraft, processingPhotos, onProcessingPhotosChange, submitting, onSubmit, onBack }: ContributeProps) {
   if (mobile) {
     return (
       <div style={{ padding: '12px 16px 18px', height: '100%', overflow: 'auto' }}>
         <div className="sheet-handle" style={{ marginBottom: 12 }} />
-        <button style={{ fontSize: 11, color: 'var(--cyan)' }} onClick={onBack}>
+        <button style={{ fontSize: 11, color: 'var(--cyan)' }} onClick={onBack} disabled={submitting || processingPhotos}>
           ← {craneName}
         </button>
         <div className="panel-title" style={{ fontSize: 16, margin: '8px 0 12px' }}>
-          Add to this crane
+          Add photos
         </div>
         <div className="label" style={{ letterSpacing: '.06em', marginBottom: 6 }}>
           ADD PHOTOS — {draft.length} / 3
         </div>
-        <ThumbStrip imgs={draft} onFiles={onFiles} onRemove={onRemoveDraft} w={78} h={60} />
-        <input
-          className="ct-in"
-          placeholder="＋ article link or note"
-          value={link}
-          onChange={(e) => onLinkChange(e.target.value)}
-          style={{ marginBottom: 12 }}
-        />
-        <button className="btn round btn-primary" onClick={onSubmit}>
-          SUBMIT CONTRIBUTION
+        <ThumbStrip drafts={draft} onFiles={onFiles} onRemove={onRemoveDraft} onProcessingChange={onProcessingPhotosChange} w={78} h={60} />
+        <button className="btn round btn-primary" onClick={onSubmit} disabled={!draft.length || submitting || processingPhotos}>
+          {processingPhotos ? 'PROCESSING PHOTO…' : submitting ? 'UPLOADING…' : 'UPLOAD PHOTOS'}
         </button>
       </div>
     )
@@ -503,30 +493,22 @@ export function ContributePanel({ mobile, craneName, draft, onFiles, onRemoveDra
   return (
     <div className="panel-scroll">
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 }}>
-        <button style={{ fontSize: 11, color: 'var(--cyan)', letterSpacing: '.03em', textAlign: 'left' }} onClick={onBack}>
+        <button style={{ fontSize: 11, color: 'var(--cyan)', letterSpacing: '.03em', textAlign: 'left' }} onClick={onBack} disabled={submitting || processingPhotos}>
           ← {craneName}
         </button>
-        <button style={{ fontSize: 14, color: 'var(--t-mut)' }} onClick={onBack} aria-label="Close">
+        <button style={{ fontSize: 14, color: 'var(--t-mut)' }} onClick={onBack} disabled={submitting || processingPhotos} aria-label="Close">
           ✕
         </button>
       </div>
       <div className="panel-title" style={{ fontSize: 18, margin: '8px 0 4px' }}>
-        Add to this crane
+        Add photos
       </div>
       <div style={{ height: 1, background: 'var(--line2)', margin: '10px 0 14px' }} />
       <div className="label">ADD PHOTOS — {draft.length} / 3</div>
-      <ThumbStrip imgs={draft} onFiles={onFiles} onRemove={onRemoveDraft} w={74} h={54} />
-      <div className="label">ARTICLE LINK / NOTE (OPTIONAL)</div>
-      <input
-        className="ct-in"
-        placeholder="＋ article link"
-        value={link}
-        onChange={(e) => onLinkChange(e.target.value)}
-        style={{ marginBottom: 16 }}
-      />
+      <ThumbStrip drafts={draft} onFiles={onFiles} onRemove={onRemoveDraft} onProcessingChange={onProcessingPhotosChange} w={74} h={54} />
       <div style={{ flex: 1 }} />
-      <button className="btn btn-primary" onClick={onSubmit}>
-        SUBMIT CONTRIBUTION
+      <button className="btn btn-primary" onClick={onSubmit} disabled={!draft.length || submitting || processingPhotos}>
+        {processingPhotos ? 'PROCESSING PHOTO…' : submitting ? 'UPLOADING…' : 'UPLOAD PHOTOS'}
       </button>
     </div>
   )

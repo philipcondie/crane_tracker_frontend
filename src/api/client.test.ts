@@ -7,6 +7,7 @@ import {
   getCranesInBounds,
   normalizeApiBaseUrl,
   reportCraneGone,
+  uploadCranePhoto,
 } from './client'
 
 const apiSummary = {
@@ -20,6 +21,15 @@ const apiSummary = {
   lng: -122.34,
   photos: 2,
   contribs: 3,
+}
+
+const apiPhoto = {
+  id: 'photo-uuid',
+  craneId: apiSummary.id,
+  url: 'https://photos.example/site.jpg',
+  originalFilename: 'site.jpg',
+  contentType: 'image/jpeg',
+  addedAt: '2026-07-29T17:59:00Z',
 }
 
 afterEach(() => {
@@ -71,17 +81,44 @@ describe('crane API contract adapter', () => {
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue(
-        new Response(JSON.stringify({ ...apiSummary, projectName: null, imgs: [], links: [] }), {
-          headers: { 'Content-Type': 'application/json' },
-        }),
+        new Response(
+          JSON.stringify({
+            ...apiSummary,
+            projectName: null,
+            photoItems: [apiPhoto],
+            links: [],
+          }),
+          { headers: { 'Content-Type': 'application/json' } },
+        ),
       ),
     )
 
     await expect(getCrane(apiSummary.id)).resolves.toMatchObject({
       name: 'Unnamed crane',
       status: 'gone',
-      imgs: [],
+      imgs: [apiPhoto.url],
+      photoItems: [apiPhoto],
       links: [],
+    })
+  })
+
+  it('derives display image URLs from photoItems in the backend detail response', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            ...apiSummary,
+            photoItems: [apiPhoto, { ...apiPhoto, id: 'pending-photo', url: null }],
+            links: [],
+          }),
+          { headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
+    )
+
+    await expect(getCrane(apiSummary.id)).resolves.toMatchObject({
+      imgs: [apiPhoto.url],
     })
   })
 
@@ -163,5 +200,48 @@ describe('crane API contract adapter', () => {
     const err = await reportCraneGone(apiSummary.id).catch((e: unknown) => e)
     expect(err).toBeInstanceOf(ApiError)
     expect(err).toMatchObject({ status: 404, message: 'crane not found' })
+  })
+
+  it('uploads one photo as multipart form data without setting Content-Type', async () => {
+    const metadata = {
+      id: 'photo-id',
+      craneId: apiSummary.id,
+      url: 'https://images.example.test/site.jpg',
+      originalFilename: 'site.jpg',
+      contentType: 'image/jpeg',
+      addedAt: '2026-07-29T17:59:00Z',
+    }
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(metadata), {
+        status: 201,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    const file = new File(['photo bytes'], 'site.jpg', { type: 'image/jpeg' })
+
+    await expect(uploadCranePhoto(apiSummary.id, file)).resolves.toEqual(metadata)
+
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(String(url)).toMatch(new RegExp(`/cranes/${apiSummary.id}/photos$`))
+    expect(init?.method).toBe('POST')
+    expect(init?.headers).toBeUndefined()
+    expect(init?.body).toBeInstanceOf(FormData)
+    const body = init?.body
+    if (!(body instanceof FormData)) throw new Error('Expected a FormData request body')
+    expect(body.get('photo')).toBe(file)
+  })
+
+  it('surfaces photo upload status errors through ApiError', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(new Response('photo exceeds 10 MB', { status: 413 })),
+    )
+    const file = new File(['photo bytes'], 'large.jpg', { type: 'image/jpeg' })
+
+    const err = await uploadCranePhoto(apiSummary.id, file).catch((e: unknown) => e)
+
+    expect(err).toBeInstanceOf(ApiError)
+    expect(err).toMatchObject({ status: 413, message: 'photo exceeds 10 MB' })
   })
 })
