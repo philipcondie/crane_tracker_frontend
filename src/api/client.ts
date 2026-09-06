@@ -194,6 +194,17 @@ export interface CranesInBoundsResponse {
   truncated: boolean
 }
 
+/** Reverse-chronological page returned by the global photo moderation feed. */
+export interface PhotoListResponse {
+  photos: CranePhoto[]
+  end: boolean
+}
+
+export interface PhotoListOptions {
+  cursor?: string
+  limit?: number
+}
+
 /** GET /cranes?north&south&east&west — summaries within a viewport. */
 export async function getCranesInBounds(
   bounds: Bounds,
@@ -208,4 +219,30 @@ export async function getCranesInBounds(
   const res = await fetch(apiUrl(`/cranes?${q}`), { signal })
   const data = await parse<ApiCranesInBoundsResponse>(res)
   return { cranes: data.cranes.map(fromApiCraneSummary), truncated: data.truncated }
+}
+
+/** GET /photos?cursor&limit — global photo feed, newest first. */
+export async function getPhotos(
+  { cursor, limit = 50 }: PhotoListOptions = {},
+  signal?: AbortSignal,
+): Promise<PhotoListResponse> {
+  const q = new URLSearchParams({ limit: String(limit) })
+  if (cursor) q.set('cursor', cursor)
+
+  const res = await fetch(apiUrl(`/photos?${q}`), { signal })
+  return parse<PhotoListResponse>(res)
+}
+
+/** DELETE /cranes/{craneId}/photos/{photoId} — permanently remove one photo. */
+export async function deletePhoto(craneId: string, photoId: string): Promise<void> {
+  const res = await fetch(
+    apiUrl(
+      `/cranes/${encodeURIComponent(craneId)}/photos/${encodeURIComponent(photoId)}`,
+    ),
+    { method: 'DELETE' },
+  )
+  if (!res.ok) {
+    const body = await res.text().catch(() => '')
+    throw new ApiError(res.status, body || res.statusText)
+  }
 }

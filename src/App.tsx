@@ -1,4 +1,5 @@
 import { Route, Routes } from 'react-router-dom'
+import AdminPhotosPage from './pages/AdminPhotosPage'
 import MapPage from './pages/MapPage'
 // Feed and Stats are deferred (v2/v3). They still read the whole in-memory
 // dataset and haven't been migrated to the bounding-box API, so they're
@@ -10,6 +11,7 @@ export default function App() {
   return (
     <Routes>
       <Route path="/" element={<MapPage />} />
+      <Route path="/admin/photos" element={<AdminPhotosPage />} />
       {/* <Route path="/feed" element={<FeedPage />} /> */}
       {/* <Route path="/stats" element={<StatsPage />} /> */}
       <Route path="*" element={<MapPage />} />

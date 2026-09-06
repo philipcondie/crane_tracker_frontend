@@ -3,8 +3,10 @@ import {
   ApiError,
   DuplicateCraneError,
   createCrane,
+  deletePhoto,
   getCrane,
   getCranesInBounds,
+  getPhotos,
   normalizeApiBaseUrl,
   reportCraneGone,
   uploadCranePhoto,
@@ -243,5 +245,64 @@ describe('crane API contract adapter', () => {
 
     expect(err).toBeInstanceOf(ApiError)
     expect(err).toMatchObject({ status: 413, message: 'photo exceeds 10 MB' })
+  })
+
+  it('lists the first photo page with the default limit and no cursor', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ photos: [apiPhoto], end: false }), {
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(getPhotos()).resolves.toEqual({ photos: [apiPhoto], end: false })
+
+    const [url, init] = fetchMock.mock.calls[0]
+    const parsed = new URL(String(url))
+    expect(parsed.pathname).toBe('/photos')
+    expect(parsed.searchParams.get('limit')).toBe('50')
+    expect(parsed.searchParams.has('cursor')).toBe(false)
+    expect(init?.signal).toBeUndefined()
+  })
+
+  it('passes a cursor, custom limit, and abort signal to later photo pages', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ photos: [], end: true }), {
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    const controller = new AbortController()
+
+    await getPhotos({ cursor: 'photo/id', limit: 12 }, controller.signal)
+
+    const [url, init] = fetchMock.mock.calls[0]
+    const parsed = new URL(String(url))
+    expect(parsed.searchParams.get('cursor')).toBe('photo/id')
+    expect(parsed.searchParams.get('limit')).toBe('12')
+    expect(init?.signal).toBe(controller.signal)
+  })
+
+  it('deletes an encoded crane photo and tolerates an empty success response', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(deletePhoto('crane/id', 'photo id')).resolves.toBeUndefined()
+
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(String(url)).toMatch(/\/cranes\/crane%2Fid\/photos\/photo%20id$/)
+    expect(init?.method).toBe('DELETE')
+  })
+
+  it('surfaces photo deletion errors through ApiError', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(new Response('photo not found', { status: 404 })),
+    )
+
+    const err = await deletePhoto('crane-id', 'photo-id').catch((e: unknown) => e)
+
+    expect(err).toBeInstanceOf(ApiError)
+    expect(err).toMatchObject({ status: 404, message: 'photo not found' })
   })
 })
