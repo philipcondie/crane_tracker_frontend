@@ -1,4 +1,4 @@
-import type { CraneDetail, CraneStatus, CraneSummary } from '../types'
+import type { CraneDetail, CranePhoto, CraneStatus, CraneSummary } from '../types'
 
 const CONFIGURED_BASE_URL = import.meta.env.VITE_API_URL
 
@@ -30,7 +30,7 @@ interface ApiCraneSummary {
 }
 
 interface ApiCraneDetail extends ApiCraneSummary {
-  imgs: string[]
+  photoItems: CranePhoto[]
   links: string[]
 }
 
@@ -38,6 +38,8 @@ interface ApiCranesInBoundsResponse {
   cranes: ApiCraneSummary[]
   truncated: boolean
 }
+
+export type UploadedPhoto = CranePhoto
 
 /** Geographic query window. north > south, east > west. */
 export interface Bounds {
@@ -116,8 +118,9 @@ function fromApiCraneSummary(crane: ApiCraneSummary): CraneSummary {
 }
 
 function fromApiCraneDetail(crane: ApiCraneDetail): CraneDetail {
-  const { imgs, links, ...summary } = crane
-  return { ...fromApiCraneSummary(summary), imgs, links }
+  const { photoItems, links, ...summary } = crane
+  const imgs = photoItems.flatMap((photo) => photo.url ? [photo.url] : [])
+  return { ...fromApiCraneSummary(summary), imgs, photoItems, links }
 }
 
 /**
@@ -161,6 +164,20 @@ export async function reportCraneGone(id: string): Promise<void> {
   }
 }
 
+/**
+ * POST /cranes/{id}/photos — upload one photo. Do not set Content-Type here:
+ * fetch adds the multipart boundary generated for this FormData body.
+ */
+export async function uploadCranePhoto(id: string, photo: File): Promise<UploadedPhoto> {
+  const body = new FormData()
+  body.append('photo', photo)
+  const res = await fetch(apiUrl(`/cranes/${encodeURIComponent(id)}/photos`), {
+    method: 'POST',
+    body,
+  })
+  return parse<UploadedPhoto>(res)
+}
+
 /** GET /cranes/{id} — full detail for a single crane. */
 export async function getCrane(id: string, signal?: AbortSignal): Promise<CraneDetail> {
   const res = await fetch(apiUrl(`/cranes/${encodeURIComponent(id)}`), { signal })
@@ -177,6 +194,17 @@ export interface CranesInBoundsResponse {
   truncated: boolean
 }
 
+/** Reverse-chronological page returned by the global photo moderation feed. */
+export interface PhotoListResponse {
+  photos: CranePhoto[]
+  end: boolean
+}
+
+export interface PhotoListOptions {
+  cursor?: string
+  limit?: number
+}
+
 /** GET /cranes?north&south&east&west — summaries within a viewport. */
 export async function getCranesInBounds(
   bounds: Bounds,
@@ -191,4 +219,54 @@ export async function getCranesInBounds(
   const res = await fetch(apiUrl(`/cranes?${q}`), { signal })
   const data = await parse<ApiCranesInBoundsResponse>(res)
   return { cranes: data.cranes.map(fromApiCraneSummary), truncated: data.truncated }
+}
+
+/** GET /cranes/photos?cursor&limit — global photo feed, newest first. */
+export async function getPhotos(
+  token: string,
+  { cursor, limit = 50 }: PhotoListOptions = {},
+  signal?: AbortSignal,
+): Promise<PhotoListResponse> {
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error('Photo limit must be between 1 and 100')
+  const q = new URLSearchParams({ limit: String(limit) })
+  if (cursor) q.set('cursor', cursor)
+
+  const res = await fetch(apiUrl(`/cranes/photos?${q}`), { signal, headers: { Authorization: `Bearer ${token}` } })
+  return parse<PhotoListResponse>(res)
+}
+
+/** DELETE /cranes/{craneId}/photos/{photoId} — permanently remove one photo. */
+export async function deletePhoto(token: string, craneId: string, photoId: string): Promise<void> {
+  const res = await fetch(
+    apiUrl(
+      `/cranes/${encodeURIComponent(craneId)}/photos/${encodeURIComponent(photoId)}`,
+    ),
+    { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } },
+  )
+  if (!res.ok) {
+    const body = await res.text().catch(() => '')
+    throw new ApiError(res.status, body || res.statusText)
+  }
+}
+
+export interface AdminSession {
+  access_token: string
+  token_type: string
+  expires_in: number
+}
+
+export async function adminLogin(username: string, password: string): Promise<AdminSession> {
+  const res = await fetch(apiUrl('/admin/login'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  })
+  return parse<AdminSession>(res)
+}
+
+export async function adminLogout(token: string): Promise<void> {
+  const res = await fetch(apiUrl('/admin/logout'), {
+    method: 'POST', headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!res.ok) throw new ApiError(res.status, 'Sign-out request failed')
 }

@@ -1,13 +1,20 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   ApiError,
+  adminLogin,
+  adminLogout,
   DuplicateCraneError,
   createCrane,
+  deletePhoto,
   getCrane,
   getCranesInBounds,
+  getPhotos,
   normalizeApiBaseUrl,
   reportCraneGone,
+  uploadCranePhoto,
 } from './client'
+
+vi.hoisted(() => { vi.stubEnv('VITE_API_URL', 'https://api.example.test') })
 
 const apiSummary = {
   id: '019f6854-fcc3-7831-b1ee-d642e12732cc',
@@ -20,6 +27,15 @@ const apiSummary = {
   lng: -122.34,
   photos: 2,
   contribs: 3,
+}
+
+const apiPhoto = {
+  id: 'photo-uuid',
+  craneId: apiSummary.id,
+  url: 'https://photos.example/site.jpg',
+  originalFilename: 'site.jpg',
+  contentType: 'image/jpeg',
+  addedAt: '2026-07-29T17:59:00Z',
 }
 
 afterEach(() => {
@@ -71,17 +87,44 @@ describe('crane API contract adapter', () => {
     vi.stubGlobal(
       'fetch',
       vi.fn().mockResolvedValue(
-        new Response(JSON.stringify({ ...apiSummary, projectName: null, imgs: [], links: [] }), {
-          headers: { 'Content-Type': 'application/json' },
-        }),
+        new Response(
+          JSON.stringify({
+            ...apiSummary,
+            projectName: null,
+            photoItems: [apiPhoto],
+            links: [],
+          }),
+          { headers: { 'Content-Type': 'application/json' } },
+        ),
       ),
     )
 
     await expect(getCrane(apiSummary.id)).resolves.toMatchObject({
       name: 'Unnamed crane',
       status: 'gone',
-      imgs: [],
+      imgs: [apiPhoto.url],
+      photoItems: [apiPhoto],
       links: [],
+    })
+  })
+
+  it('derives display image URLs from photoItems in the backend detail response', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            ...apiSummary,
+            photoItems: [apiPhoto, { ...apiPhoto, id: 'pending-photo', url: null }],
+            links: [],
+          }),
+          { headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
+    )
+
+    await expect(getCrane(apiSummary.id)).resolves.toMatchObject({
+      imgs: [apiPhoto.url],
     })
   })
 
@@ -101,6 +144,7 @@ describe('crane API contract adapter', () => {
     })
 
     const [, init] = fetchMock.mock.calls[0]
+    expect(init?.headers).toEqual({ 'Content-Type': 'application/json' })
     expect(JSON.parse(String(init?.body))).toEqual({
       lat: apiSummary.lat,
       lng: apiSummary.lng,
@@ -164,4 +208,125 @@ describe('crane API contract adapter', () => {
     expect(err).toBeInstanceOf(ApiError)
     expect(err).toMatchObject({ status: 404, message: 'crane not found' })
   })
+
+  it('uploads one photo as multipart form data without setting Content-Type', async () => {
+    const metadata = {
+      id: 'photo-id',
+      craneId: apiSummary.id,
+      url: 'https://images.example.test/site.jpg',
+      originalFilename: 'site.jpg',
+      contentType: 'image/jpeg',
+      addedAt: '2026-07-29T17:59:00Z',
+    }
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify(metadata), {
+        status: 201,
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    const file = new File(['photo bytes'], 'site.jpg', { type: 'image/jpeg' })
+
+    await expect(uploadCranePhoto(apiSummary.id, file)).resolves.toEqual(metadata)
+
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(String(url)).toMatch(new RegExp(`/cranes/${apiSummary.id}/photos$`))
+    expect(init?.method).toBe('POST')
+    expect(init?.headers).toBeUndefined()
+    expect(init?.body).toBeInstanceOf(FormData)
+    const body = init?.body
+    if (!(body instanceof FormData)) throw new Error('Expected a FormData request body')
+    expect(body.get('photo')).toBe(file)
+  })
+
+  it('surfaces photo upload status errors through ApiError', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(new Response('photo exceeds 10 MB', { status: 413 })),
+    )
+    const file = new File(['photo bytes'], 'large.jpg', { type: 'image/jpeg' })
+
+    const err = await uploadCranePhoto(apiSummary.id, file).catch((e: unknown) => e)
+
+    expect(err).toBeInstanceOf(ApiError)
+    expect(err).toMatchObject({ status: 413, message: 'photo exceeds 10 MB' })
+  })
+
+  it('lists the first photo page with the default limit and no cursor', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ photos: [apiPhoto], end: false }), {
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(getPhotos('token')).resolves.toEqual({ photos: [apiPhoto], end: false })
+
+    const [url, init] = fetchMock.mock.calls[0]
+    const parsed = new URL(String(url))
+    expect(parsed.pathname).toBe('/cranes/photos')
+    expect(parsed.searchParams.get('limit')).toBe('50')
+    expect(parsed.searchParams.has('cursor')).toBe(false)
+    expect(init?.signal).toBeUndefined()
+    expect(init?.headers).toEqual({ Authorization: 'Bearer token' })
+  })
+
+  it('passes a cursor, custom limit, and abort signal to later photo pages', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ photos: [], end: true }), {
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    )
+    vi.stubGlobal('fetch', fetchMock)
+    const controller = new AbortController()
+
+    await getPhotos('token', { cursor: 'photo/id', limit: 12 }, controller.signal)
+
+    const [url, init] = fetchMock.mock.calls[0]
+    const parsed = new URL(String(url))
+    expect(parsed.searchParams.get('cursor')).toBe('photo/id')
+    expect(parsed.searchParams.get('limit')).toBe('12')
+    expect(init?.signal).toBe(controller.signal)
+  })
+
+  it('deletes an encoded crane photo and tolerates an empty success response', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }))
+    vi.stubGlobal('fetch', fetchMock)
+
+    await expect(deletePhoto('token', 'crane/id', 'photo id')).resolves.toBeUndefined()
+
+    const [url, init] = fetchMock.mock.calls[0]
+    expect(String(url)).toMatch(/\/cranes\/crane%2Fid\/photos\/photo%20id$/)
+    expect(init?.method).toBe('DELETE')
+    expect(init?.headers).toEqual({ Authorization: 'Bearer token' })
+  })
+
+  it('surfaces photo deletion errors through ApiError', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(new Response('photo not found', { status: 404 })),
+    )
+
+    const err = await deletePhoto('token', 'crane-id', 'photo-id').catch((e: unknown) => e)
+
+    expect(err).toBeInstanceOf(ApiError)
+    expect(err).toMatchObject({ status: 404, message: 'photo not found' })
+  })
+})
+
+it('posts admin credentials and revokes the bearer token without parsing 204', async () => {
+  const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({ access_token: 'token', token_type: 'bearer', expires_in: 3600 }))).mockResolvedValueOnce(new Response(null, { status: 204 }))
+  vi.stubGlobal('fetch', fetchMock)
+  await expect(adminLogin('admin', 'password')).resolves.toMatchObject({ access_token: 'token' })
+  expect(fetchMock.mock.calls[0][0]).toBe('https://api.example.test/admin/login')
+  expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ username: 'admin', password: 'password' })
+  await adminLogout('token')
+  expect(fetchMock.mock.calls[1]).toEqual(['https://api.example.test/admin/logout', { method: 'POST', headers: { Authorization: 'Bearer token' } }])
+})
+
+it('rejects invalid photo limits before making a request', async () => {
+  const fetchMock = vi.fn()
+  vi.stubGlobal('fetch', fetchMock)
+  for (const limit of [0, 101, 1.5]) await expect(getPhotos('token', { limit })).rejects.toThrow('Photo limit')
+  expect(fetchMock).not.toHaveBeenCalled()
 })

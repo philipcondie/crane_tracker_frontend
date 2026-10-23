@@ -1,3 +1,21 @@
+import type { PhotoDraft } from './types'
+import {
+  PhotoProcessingError,
+  processPhotoFile,
+  validatePhotoFile,
+  type PhotoSelectionIssue,
+} from './photoProcessing'
+
+export {
+  PHOTO_ALLOWED_MIME_TYPES,
+  PHOTO_INPUT_MAX_BYTES,
+  PHOTO_MAX_DIMENSION,
+  PHOTO_OUTPUT_MAX_BYTES,
+  PHOTO_WEBP_QUALITY,
+  validatePhotoFile,
+  type PhotoSelectionIssue,
+} from './photoProcessing'
+
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
 
 export function fmtLatLng(lat: number, lng: number): string {
@@ -44,25 +62,54 @@ export function daysSince(iso: string): number {
   return Math.floor((Date.now() - parseISO(iso).getTime()) / 86400000)
 }
 
-/** Read up to `max` images from a file input as data URLs (session-only storage). */
-export function readFilesAsDataUrls(fileList: FileList | null, max: number, cb: (urls: string[]) => void): void {
-  const files = Array.from(fileList ?? []).slice(0, max)
+/** Keep the selected files for upload and read data URLs for their staged previews. */
+export function readFilesAsPhotoDrafts(
+  fileList: FileList | null,
+  max: number,
+  cb: (drafts: PhotoDraft[]) => void,
+  onIssues?: (issues: PhotoSelectionIssue[]) => void,
+  onProcessing?: (processing: boolean) => void,
+): void {
+  const issues = new Set<PhotoSelectionIssue>()
+  const eligible = Array.from(fileList ?? []).filter((file) => {
+    const issue = validatePhotoFile(file)
+    if (issue) issues.add(issue)
+    return issue == null
+  })
+  if (eligible.length > max) issues.add('too-many')
+  onIssues?.([...issues])
+
+  const files = eligible.slice(0, max)
   if (!files.length) {
     cb([])
     return
   }
-  const out: (string | null)[] = new Array(files.length).fill(null)
-  let left = files.length
-  files.forEach((file, i) => {
+
+  const readPreview = (file: File): Promise<string> => new Promise((resolve, reject) => {
     const reader = new FileReader()
-    const done = () => {
-      if (--left === 0) cb(out.filter((u): u is string => Boolean(u)))
-    }
     reader.onload = () => {
-      out[i] = typeof reader.result === 'string' ? reader.result : null
-      done()
+      if (typeof reader.result === 'string') resolve(reader.result)
+      else reject(new Error('FileReader returned no preview'))
     }
-    reader.onerror = done
+    reader.onerror = reject
     reader.readAsDataURL(file)
   })
+
+  onProcessing?.(true)
+  void (async () => {
+    const drafts: PhotoDraft[] = []
+    for (const file of files) {
+      try {
+        const processed = await processPhotoFile(file)
+        drafts.push({ file: processed, previewUrl: await readPreview(processed) })
+      } catch (error) {
+        issues.add(
+          error instanceof PhotoProcessingError ? error.issue : 'unreadable',
+        )
+      }
+    }
+    onIssues?.([...issues])
+    cb(drafts)
+    onProcessing?.(false)
+  })()
 }

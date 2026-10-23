@@ -1,6 +1,6 @@
-import type { ChangeEvent, CSSProperties } from 'react'
-import type { CraneDetail } from '../types'
-import { readFilesAsDataUrls } from '../utils'
+import { useState, type ChangeEvent, type CSSProperties } from 'react'
+import type { CraneDetail, PhotoDraft } from '../types'
+import { readFilesAsPhotoDrafts, type PhotoSelectionIssue } from '../utils'
 
 function wrapIndex(idx: number, len: number): number {
   return len ? ((idx % len) + len) % len : 0
@@ -75,35 +75,79 @@ export function PhotoBox({ crane, idx, height, onPrev, onNext }: PhotoBoxProps) 
 }
 
 interface ThumbStripProps {
-  imgs: string[]
-  onFiles: (urls: string[]) => void
+  drafts: PhotoDraft[]
+  onFiles: (drafts: PhotoDraft[]) => void
   onRemove: (i: number) => void
+  onProcessingChange: (processing: boolean) => void
   w: number
   h: number
 }
 
 /** Staged upload thumbnails with ✕ remove and a dashed ADD PHOTO tile (max 3) */
-export function ThumbStrip({ imgs, onFiles, onRemove, w, h }: ThumbStripProps) {
+export function ThumbStrip({ drafts, onFiles, onRemove, onProcessingChange, w, h }: ThumbStripProps) {
+  const [validationError, setValidationError] = useState('')
+  const [processing, setProcessing] = useState(false)
+
+  const handleIssues = (issues: PhotoSelectionIssue[]) => {
+    const copy: Record<PhotoSelectionIssue, string> = {
+      'unsupported-type': 'USE JPEG, PNG, WEBP, GIF, HEIC, OR HEIF',
+      'input-too-large': 'PHOTO MUST BE 30 MB OR SMALLER BEFORE PROCESSING',
+      'output-too-large': 'COULD NOT REDUCE PHOTO BELOW 10 MB',
+      'too-many': 'UP TO 3 PHOTOS',
+      unreadable: 'COULD NOT READ PHOTO',
+    }
+    setValidationError(issues.map((issue) => copy[issue]).join(' · '))
+  }
+
+  const handleProcessing = (value: boolean) => {
+    setProcessing(value)
+    onProcessingChange(value)
+  }
+
   const handleChange = (e: ChangeEvent<HTMLInputElement>) => {
     const input = e.target
-    readFilesAsDataUrls(input.files, 3 - imgs.length, onFiles)
+    readFilesAsPhotoDrafts(
+      input.files,
+      3 - drafts.length,
+      onFiles,
+      handleIssues,
+      handleProcessing,
+    )
     input.value = ''
   }
   return (
-    <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
-      {imgs.map((url, i) => (
-        <div key={i} className="thumb" style={{ width: w, height: h }}>
-          <img src={url} alt={`upload ${i + 1}`} />
-          <button className="thumb-x" onClick={() => onRemove(i)} aria-label="Remove photo">
-            ✕
-          </button>
+    <div style={{ marginBottom: 16 }}>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        {drafts.map((draft, i) => (
+          <div key={i} className="thumb" style={{ width: w, height: h }}>
+            <img src={draft.previewUrl} alt={`upload ${i + 1}`} />
+            <button className="thumb-x" onClick={() => onRemove(i)} aria-label="Remove photo">
+              ✕
+            </button>
+          </div>
+        ))}
+        {drafts.length < 3 && !processing && (
+          <label className="add-photo" style={{ width: w, height: h }}>
+            <span>＋</span>ADD PHOTO
+            <input
+              type="file"
+              accept="image/jpeg,image/png,image/webp,image/gif,image/heic,image/heif"
+              multiple
+              onChange={handleChange}
+              style={{ display: 'none' }}
+            />
+          </label>
+        )}
+      </div>
+      {processing && (
+        <div style={{ fontSize: 9, marginTop: 8, color: 'var(--cyan)', lineHeight: 1.45 }}>
+          PROCESSING PHOTO…
         </div>
-      ))}
-      {imgs.length < 3 && (
-        <label className="add-photo" style={{ width: w, height: h }}>
-          <span>＋</span>ADD PHOTO
-          <input type="file" accept="image/*" multiple onChange={handleChange} style={{ display: 'none' }} />
-        </label>
+      )}
+      {validationError && (
+        <div className="status-gone" role="alert" style={{ fontSize: 9, marginTop: 8, lineHeight: 1.45 }}>
+          {validationError}
+        </div>
       )}
     </div>
   )
