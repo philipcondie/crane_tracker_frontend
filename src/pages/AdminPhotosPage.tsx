@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { deletePhoto, getPhotos } from '../api/client'
+import { ApiError, adminLogin, adminLogout, deletePhoto, getPhotos } from '../api/client'
 import type { CranePhoto } from '../types'
 
 type LoadState = 'initial' | 'ready' | 'loading-more' | 'error'
@@ -18,9 +18,10 @@ function formatUploadedAt(value: string): string {
 interface PhotoCardProps {
   photo: CranePhoto
   onDelete: (photo: CranePhoto) => void
+  onPreview: (photo: CranePhoto) => void
 }
 
-function PhotoCard({ photo, onDelete }: PhotoCardProps) {
+function PhotoCard({ photo, onDelete, onPreview }: PhotoCardProps) {
   const [imageFailed, setImageFailed] = useState(false)
   const hasImage = Boolean(photo.url) && !imageFailed
 
@@ -28,12 +29,12 @@ function PhotoCard({ photo, onDelete }: PhotoCardProps) {
     <article className="admin-photo-card">
       <div className={hasImage ? 'admin-photo-frame' : 'admin-photo-frame unavailable'}>
         {hasImage ? (
-          <img
+          <button className="admin-preview-button" type="button" onClick={() => onPreview(photo)} aria-label={`Preview ${photo.originalFilename}`}><img
             src={photo.url ?? undefined}
             alt={photo.originalFilename || 'Uploaded crane photo'}
             loading="lazy"
             onError={() => setImageFailed(true)}
-          />
+          /></button>
         ) : (
           <div className="admin-photo-missing" role="img" aria-label="Image unavailable">
             <span aria-hidden="true">△</span>
@@ -75,41 +76,34 @@ interface DeleteDialogProps {
 }
 
 function DeleteDialog({ photo, deleting, error, onCancel, onConfirm }: DeleteDialogProps) {
-  const confirmRef = useRef<HTMLButtonElement>(null)
-
-  useEffect(() => {
-    confirmRef.current?.focus()
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape' && !deleting) onCancel()
-    }
-    document.addEventListener('keydown', onKeyDown)
-    return () => document.removeEventListener('keydown', onKeyDown)
-  }, [deleting, onCancel])
+  const dialogRef = useModal(onCancel, deleting)
 
   return (
     <div className="admin-dialog-scrim" onMouseDown={deleting ? undefined : onCancel}>
       <div
         className="admin-dialog"
+        ref={dialogRef}
+        tabIndex={-1}
         role="alertdialog"
         aria-modal="true"
         aria-labelledby="delete-photo-title"
         aria-describedby="delete-photo-description"
         onMouseDown={(event) => event.stopPropagation()}
       >
-        <div className="admin-dialog-mark" aria-hidden="true">×</div>
+        <button type="button" className="admin-dialog-mark" aria-label="Close delete confirmation" onClick={onCancel} disabled={deleting}>×</button>
         <div>
           <h2 id="delete-photo-title">Delete this photo?</h2>
           <p id="delete-photo-description">
             <strong>{photo.originalFilename || 'This upload'}</strong> will be permanently removed.
             This cannot be undone.
           </p>
+          {photo.url && <img className="admin-dialog-photo" src={photo.url} alt={photo.originalFilename} />}
           {error && <p className="admin-dialog-error" role="alert">{error}</p>}
           <div className="admin-dialog-actions">
             <button type="button" className="btn btn-quiet" onClick={onCancel} disabled={deleting}>
               Keep photo
             </button>
             <button
-              ref={confirmRef}
               type="button"
               className="btn btn-danger admin-confirm-delete"
               onClick={onConfirm}
@@ -124,11 +118,137 @@ function DeleteDialog({ photo, deleting, error, onCancel, onConfirm }: DeleteDia
   )
 }
 
+function useModal(onClose: () => void, busy = false) {
+  const ref = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const opener = document.activeElement as HTMLElement | null
+    return () => { if (opener?.isConnected) opener.focus() }
+  }, [])
+  useEffect(() => {
+    const node = ref.current
+    const focusable = () => Array.from(node?.querySelectorAll<HTMLButtonElement>('button:not(:disabled), a[href]') ?? [])
+    if (busy) node?.focus()
+    else focusable()[0]?.focus()
+    const keydown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') { event.preventDefault(); if (!busy) onClose() }
+      if (event.key === 'Tab') {
+        const items = focusable()
+        if (!items.length) { event.preventDefault(); node?.focus(); return }
+        const next = event.shiftKey ? items.at(-1) : items[0]
+        if (!node?.contains(document.activeElement) || document.activeElement === (event.shiftKey ? items[0] : items.at(-1))) {
+          event.preventDefault(); next?.focus()
+        }
+      }
+    }
+    document.addEventListener('keydown', keydown)
+    return () => document.removeEventListener('keydown', keydown)
+  }, [onClose, busy])
+  return ref
+}
+
 function errorMessage(error: unknown, fallback: string): string {
-  return error instanceof Error && error.message ? error.message : fallback
+  return error instanceof ApiError && error.status === 429
+    ? 'Too many requests. Please wait and try again.' : fallback
 }
 
 export default function AdminPhotosPage() {
+  const [token, setToken] = useState<string | null>(null)
+  const [message, setMessage] = useState<string | null>(null)
+  const expire = useCallback(() => { setToken(null); setMessage('Your session expired. Please sign in again.') }, [])
+  const signOut = () => {
+    const current = token
+    setToken(null)
+    setMessage(null)
+    if (current) void adminLogout(current).catch(() => {})
+  }
+  if (!token) return <AdminSignIn message={message} onSignIn={setToken} />
+  return <PhotoReview token={token} onExpired={expire} onSignOut={signOut} />
+}
+
+function AdminSignIn({ message, onSignIn }: { message: string | null; onSignIn: (token: string) => void }) {
+  const [busy, setBusy] = useState(false)
+  const submitting = useRef(false)
+  const [error, setError] = useState<string | null>(null)
+
+  return (
+    <div className="admin-page">
+      <header className="admin-header">
+        <Link className="admin-brand" to="/">▲ Crane Tracker</Link>
+      </header>
+      <main className="admin-main admin-signin">
+        <h1>Admin sign-in</h1>
+        <p>Sign in to review uploaded photos.</p>
+        {message && <p role="status">{message}</p>}
+        <form onSubmit={async (event) => {
+          event.preventDefault()
+          if (submitting.current) return
+          submitting.current = true
+          setBusy(true)
+          setError(null)
+          const form = event.currentTarget
+          const data = new FormData(form)
+          try {
+            const session = await adminLogin(String(data.get('username')), String(data.get('password')))
+            form.reset()
+            onSignIn(session.access_token)
+          } catch (error) {
+            form.reset()
+            setError(error instanceof ApiError && error.status === 401
+              ? 'Invalid username or password.'
+              : errorMessage(error, 'Could not sign in. Please try again.'))
+          } finally {
+            submitting.current = false
+            setBusy(false)
+          }
+        }}>
+          <label htmlFor="admin-username">Username</label>
+          <input id="admin-username" name="username" autoComplete="off" required disabled={busy} />
+          <label htmlFor="admin-password">Password</label>
+          <input id="admin-password" name="password" type="password" autoComplete="off" required disabled={busy} />
+          {error && <p role="alert">{error}</p>}
+          <button className="btn btn-primary" disabled={busy}>
+            {busy ? 'Signing in…' : 'Sign in'}
+          </button>
+        </form>
+      </main>
+    </div>
+  )
+}
+
+function Preview({ photo, onClose }: { photo: CranePhoto; onClose: () => void }) {
+  const ref = useModal(onClose)
+  return (
+    <div className="admin-dialog-scrim" onMouseDown={onClose}>
+      <div
+        ref={ref}
+        className="admin-dialog admin-preview"
+        tabIndex={-1}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="preview-title"
+        onMouseDown={event => event.stopPropagation()}
+      >
+        <div className="admin-preview-header">
+          <h2 id="preview-title">{photo.originalFilename}</h2>
+          <button type="button" className="admin-dialog-mark" aria-label="Close preview" onClick={onClose}>×</button>
+        </div>
+        <img src={photo.url ?? undefined} alt={photo.originalFilename} />
+      </div>
+    </div>
+  )
+}
+
+function PhotoReview({ token, onExpired, onSignOut }: { token: string; onExpired: () => void; onSignOut: () => void }) {
+  const [preview, setPreview] = useState<CranePhoto | null>(null)
+  const closePreview = useCallback(() => setPreview(null), [])
+  const [notice, setNotice] = useState<string | null>(null)
+  const deletingRef = useRef(false)
+  const removedRef = useRef(new Set<string>())
+  const mountedRef = useRef(true)
+  useEffect(() => {
+    mountedRef.current = true
+    return () => { mountedRef.current = false }
+  }, [])
   const [photos, setPhotos] = useState<CranePhoto[]>([])
   const [end, setEnd] = useState(false)
   const [loadState, setLoadState] = useState<LoadState>('initial')
@@ -140,7 +260,6 @@ export default function AdminPhotosPage() {
   const cursorRef = useRef<string | undefined>(undefined)
   const loadingRef = useRef(false)
   const pageControllerRef = useRef<AbortController | null>(null)
-  const sentinelRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     const controller = new AbortController()
@@ -151,15 +270,17 @@ export default function AdminPhotosPage() {
     setLoadError(null)
     setLoadState('initial')
 
-    void getPhotos({}, controller.signal)
+    void getPhotos(token, {}, controller.signal)
       .then((result) => {
+        if (controller.signal.aborted) return
         cursorRef.current = result.photos.at(-1)?.id
-        setPhotos(result.photos)
+        setPhotos(Array.from(new Map(result.photos.map(photo => [photo.id, photo])).values()))
         setEnd(result.end || result.photos.length === 0)
         setLoadState('ready')
       })
       .catch((error: unknown) => {
         if (controller.signal.aborted) return
+        if (error instanceof ApiError && error.status === 401) { onExpired(); return }
         setLoadError(errorMessage(error, 'Could not load the photo archive.'))
         setLoadState('error')
       })
@@ -171,7 +292,7 @@ export default function AdminPhotosPage() {
       controller.abort()
       loadingRef.current = false
     }
-  }, [reloadKey])
+  }, [reloadKey, token, onExpired])
 
   useEffect(() => () => pageControllerRef.current?.abort(), [])
 
@@ -184,16 +305,21 @@ export default function AdminPhotosPage() {
     setLoadState('loading-more')
 
     try {
-      const result = await getPhotos({ cursor: cursorRef.current }, controller.signal)
+      const result = await getPhotos(token, { cursor: cursorRef.current }, controller.signal)
+      if (controller.signal.aborted) return
       cursorRef.current = result.photos.at(-1)?.id ?? cursorRef.current
       setPhotos((current) => {
         const known = new Set(current.map((photo) => photo.id))
-        return [...current, ...result.photos.filter((photo) => !known.has(photo.id))]
+        return [...current, ...result.photos.filter((photo) => {
+          if (known.has(photo.id) || removedRef.current.has(photo.id)) return false
+          known.add(photo.id); return true
+        })]
       })
       setEnd(result.end || result.photos.length === 0)
       setLoadState('ready')
     } catch (error) {
       if (controller.signal.aborted) return
+      if (error instanceof ApiError && error.status === 401) { onExpired(); return }
       setLoadError(errorMessage(error, 'Could not load more photos.'))
       setLoadState('error')
     } finally {
@@ -202,21 +328,7 @@ export default function AdminPhotosPage() {
         loadingRef.current = false
       }
     }
-  }, [end])
-
-  useEffect(() => {
-    const sentinel = sentinelRef.current
-    if (!sentinel || end || loadState !== 'ready') return
-
-    const observer = new IntersectionObserver(
-      (entries) => {
-        if (entries.some((entry) => entry.isIntersecting)) void loadMore()
-      },
-      { rootMargin: '500px 0px' },
-    )
-    observer.observe(sentinel)
-    return () => observer.disconnect()
-  }, [end, loadMore, loadState])
+  }, [end, token, onExpired])
 
   const requestDelete = (photo: CranePhoto) => {
     setDeleteError(null)
@@ -230,22 +342,33 @@ export default function AdminPhotosPage() {
   }, [deleting])
 
   const confirmDelete = async () => {
-    if (!pendingDelete || deleting) return
+    if (!pendingDelete || deletingRef.current) return
+    deletingRef.current = true
     setDeleting(true)
     setDeleteError(null)
     try {
-      await deletePhoto(pendingDelete.craneId, pendingDelete.id)
+      await deletePhoto(token, pendingDelete.craneId, pendingDelete.id)
+      if (!mountedRef.current) return
+      removedRef.current.add(pendingDelete.id)
       setPhotos((current) => current.filter((photo) => photo.id !== pendingDelete.id))
       setPendingDelete(null)
     } catch (error) {
+      if (!mountedRef.current) return
+      if (error instanceof ApiError && error.status === 401) { onExpired(); return }
+      if (error instanceof ApiError && error.status === 404) {
+        removedRef.current.add(pendingDelete.id)
+        setPhotos(current => current.filter(photo => photo.id !== pendingDelete.id))
+        setPendingDelete(null); setNotice('That photo is no longer available. It has been removed from this list.'); return
+      }
       setDeleteError(errorMessage(error, 'The photo could not be deleted. Try again.'))
     } finally {
-      setDeleting(false)
+      deletingRef.current = false
+      if (mountedRef.current) setDeleting(false)
     }
   }
 
-  const initialError = loadState === 'error' && photos.length === 0
-  const pageError = loadState === 'error' && photos.length > 0
+  const initialError = loadState === 'error' && !cursorRef.current
+  const pageError = loadState === 'error' && Boolean(cursorRef.current)
 
   return (
     <div className="admin-page">
@@ -254,7 +377,8 @@ export default function AdminPhotosPage() {
           <span aria-hidden="true">▲</span>
           <span>Crane Tracker</span>
         </Link>
-        <span className="admin-header-context">Photo archive</span>
+        <span className="admin-header-context">Photo review</span>
+        <button className="btn btn-quiet" onClick={onSignOut}>Sign out</button>
       </header>
 
       <main className="admin-main">
@@ -272,10 +396,7 @@ export default function AdminPhotosPage() {
           </div>
         </section>
 
-        <aside className="admin-security-note" role="note">
-          <span aria-hidden="true">!</span>
-          <p><strong>Access controls are not configured.</strong> Anyone with this address can use these tools.</p>
-        </aside>
+        {notice && <p role="status">{notice}</p>}
 
         {loadState === 'initial' && (
           <div className="admin-status" role="status">
@@ -298,19 +419,25 @@ export default function AdminPhotosPage() {
           <div className="admin-empty">
             <span aria-hidden="true">△</span>
             <h2>No photos to review</h2>
-            <p>New uploads will appear here automatically.</p>
+            <p>New uploads will appear when you return to this screen.</p>
           </div>
         )}
 
         {photos.length > 0 && (
           <section className="admin-photo-grid" aria-label="Uploaded photos">
             {photos.map((photo) => (
-              <PhotoCard key={photo.id} photo={photo} onDelete={requestDelete} />
+              <PhotoCard key={photo.id} photo={photo} onDelete={requestDelete} onPreview={setPreview} />
             ))}
           </section>
         )}
 
-        <div ref={sentinelRef} className="admin-scroll-sentinel" aria-hidden="true" />
+        {!end && cursorRef.current && (
+          <div className="admin-page-status">
+            <button className="btn btn-outline" disabled={loadState === 'loading-more'} onClick={() => void loadMore()}>
+              Load more
+            </button>
+          </div>
+        )}
 
         {loadState === 'loading-more' && (
           <div className="admin-page-status" role="status">
@@ -331,6 +458,7 @@ export default function AdminPhotosPage() {
         )}
       </main>
 
+      {preview && <Preview photo={preview} onClose={closePreview} />}
       {pendingDelete && (
         <DeleteDialog
           photo={pendingDelete}

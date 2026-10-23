@@ -11,6 +11,7 @@ export default function App() {
   return (
     <Routes>
       <Route path="/" element={<MapPage />} />
+      <Route path="/admin" element={<AdminPhotosPage />} />
       <Route path="/admin/photos" element={<AdminPhotosPage />} />
       {/* <Route path="/feed" element={<FeedPage />} /> */}
       {/* <Route path="/stats" element={<StatsPage />} /> */}

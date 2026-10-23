@@ -221,28 +221,52 @@ export async function getCranesInBounds(
   return { cranes: data.cranes.map(fromApiCraneSummary), truncated: data.truncated }
 }
 
-/** GET /photos?cursor&limit — global photo feed, newest first. */
+/** GET /cranes/photos?cursor&limit — global photo feed, newest first. */
 export async function getPhotos(
+  token: string,
   { cursor, limit = 50 }: PhotoListOptions = {},
   signal?: AbortSignal,
 ): Promise<PhotoListResponse> {
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) throw new Error('Photo limit must be between 1 and 100')
   const q = new URLSearchParams({ limit: String(limit) })
   if (cursor) q.set('cursor', cursor)
 
-  const res = await fetch(apiUrl(`/photos?${q}`), { signal })
+  const res = await fetch(apiUrl(`/cranes/photos?${q}`), { signal, headers: { Authorization: `Bearer ${token}` } })
   return parse<PhotoListResponse>(res)
 }
 
 /** DELETE /cranes/{craneId}/photos/{photoId} — permanently remove one photo. */
-export async function deletePhoto(craneId: string, photoId: string): Promise<void> {
+export async function deletePhoto(token: string, craneId: string, photoId: string): Promise<void> {
   const res = await fetch(
     apiUrl(
       `/cranes/${encodeURIComponent(craneId)}/photos/${encodeURIComponent(photoId)}`,
     ),
-    { method: 'DELETE' },
+    { method: 'DELETE', headers: { Authorization: `Bearer ${token}` } },
   )
   if (!res.ok) {
     const body = await res.text().catch(() => '')
     throw new ApiError(res.status, body || res.statusText)
   }
+}
+
+export interface AdminSession {
+  access_token: string
+  token_type: string
+  expires_in: number
+}
+
+export async function adminLogin(username: string, password: string): Promise<AdminSession> {
+  const res = await fetch(apiUrl('/admin/login'), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  })
+  return parse<AdminSession>(res)
+}
+
+export async function adminLogout(token: string): Promise<void> {
+  const res = await fetch(apiUrl('/admin/logout'), {
+    method: 'POST', headers: { Authorization: `Bearer ${token}` },
+  })
+  if (!res.ok) throw new ApiError(res.status, 'Sign-out request failed')
 }

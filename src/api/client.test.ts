@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
   ApiError,
+  adminLogin,
+  adminLogout,
   DuplicateCraneError,
   createCrane,
   deletePhoto,
@@ -11,6 +13,8 @@ import {
   reportCraneGone,
   uploadCranePhoto,
 } from './client'
+
+vi.hoisted(() => { vi.stubEnv('VITE_API_URL', 'https://api.example.test') })
 
 const apiSummary = {
   id: '019f6854-fcc3-7831-b1ee-d642e12732cc',
@@ -140,6 +144,7 @@ describe('crane API contract adapter', () => {
     })
 
     const [, init] = fetchMock.mock.calls[0]
+    expect(init?.headers).toEqual({ 'Content-Type': 'application/json' })
     expect(JSON.parse(String(init?.body))).toEqual({
       lat: apiSummary.lat,
       lng: apiSummary.lng,
@@ -255,14 +260,15 @@ describe('crane API contract adapter', () => {
     )
     vi.stubGlobal('fetch', fetchMock)
 
-    await expect(getPhotos()).resolves.toEqual({ photos: [apiPhoto], end: false })
+    await expect(getPhotos('token')).resolves.toEqual({ photos: [apiPhoto], end: false })
 
     const [url, init] = fetchMock.mock.calls[0]
     const parsed = new URL(String(url))
-    expect(parsed.pathname).toBe('/photos')
+    expect(parsed.pathname).toBe('/cranes/photos')
     expect(parsed.searchParams.get('limit')).toBe('50')
     expect(parsed.searchParams.has('cursor')).toBe(false)
     expect(init?.signal).toBeUndefined()
+    expect(init?.headers).toEqual({ Authorization: 'Bearer token' })
   })
 
   it('passes a cursor, custom limit, and abort signal to later photo pages', async () => {
@@ -274,7 +280,7 @@ describe('crane API contract adapter', () => {
     vi.stubGlobal('fetch', fetchMock)
     const controller = new AbortController()
 
-    await getPhotos({ cursor: 'photo/id', limit: 12 }, controller.signal)
+    await getPhotos('token', { cursor: 'photo/id', limit: 12 }, controller.signal)
 
     const [url, init] = fetchMock.mock.calls[0]
     const parsed = new URL(String(url))
@@ -287,11 +293,12 @@ describe('crane API contract adapter', () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }))
     vi.stubGlobal('fetch', fetchMock)
 
-    await expect(deletePhoto('crane/id', 'photo id')).resolves.toBeUndefined()
+    await expect(deletePhoto('token', 'crane/id', 'photo id')).resolves.toBeUndefined()
 
     const [url, init] = fetchMock.mock.calls[0]
     expect(String(url)).toMatch(/\/cranes\/crane%2Fid\/photos\/photo%20id$/)
     expect(init?.method).toBe('DELETE')
+    expect(init?.headers).toEqual({ Authorization: 'Bearer token' })
   })
 
   it('surfaces photo deletion errors through ApiError', async () => {
@@ -300,9 +307,26 @@ describe('crane API contract adapter', () => {
       vi.fn().mockResolvedValue(new Response('photo not found', { status: 404 })),
     )
 
-    const err = await deletePhoto('crane-id', 'photo-id').catch((e: unknown) => e)
+    const err = await deletePhoto('token', 'crane-id', 'photo-id').catch((e: unknown) => e)
 
     expect(err).toBeInstanceOf(ApiError)
     expect(err).toMatchObject({ status: 404, message: 'photo not found' })
   })
+})
+
+it('posts admin credentials and revokes the bearer token without parsing 204', async () => {
+  const fetchMock = vi.fn().mockResolvedValueOnce(new Response(JSON.stringify({ access_token: 'token', token_type: 'bearer', expires_in: 3600 }))).mockResolvedValueOnce(new Response(null, { status: 204 }))
+  vi.stubGlobal('fetch', fetchMock)
+  await expect(adminLogin('admin', 'password')).resolves.toMatchObject({ access_token: 'token' })
+  expect(fetchMock.mock.calls[0][0]).toBe('https://api.example.test/admin/login')
+  expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ username: 'admin', password: 'password' })
+  await adminLogout('token')
+  expect(fetchMock.mock.calls[1]).toEqual(['https://api.example.test/admin/logout', { method: 'POST', headers: { Authorization: 'Bearer token' } }])
+})
+
+it('rejects invalid photo limits before making a request', async () => {
+  const fetchMock = vi.fn()
+  vi.stubGlobal('fetch', fetchMock)
+  for (const limit of [0, 101, 1.5]) await expect(getPhotos('token', { limit })).rejects.toThrow('Photo limit')
+  expect(fetchMock).not.toHaveBeenCalled()
 })

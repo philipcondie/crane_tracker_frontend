@@ -1209,3 +1209,26 @@ select.ct-in {
   color: var(--cyan);
   white-space: nowrap;
 }
+
+.admin-signin { max-width: 440px; }
+.admin-signin form { display: grid; gap: 12px; margin-top: 24px; }
+.admin-signin input { width: 100%; box-sizing: border-box; padding: 12px; border: 1px solid var(--line); border-radius: 8px; font: inherit; }
+.admin-preview-button { border: 0; padding: 0; width: 100%; height: 100%; cursor: zoom-in; }
+.admin-preview-button:focus-visible { outline: 3px solid var(--cyan); outline-offset: -3px; }
+.admin-photo-frame::after { pointer-events: none; }
+.admin-dialog-photo { max-width: 100%; max-height: 240px; object-fit: contain; }
+.admin-preview { display: flex; flex-direction: column; max-width: 1000px; max-height: 90vh; overflow: auto; }
+.admin-preview img { max-width: 100%; max-height: 70vh; object-fit: contain; }
+.admin-dialog { max-height: 90vh; overflow: auto; }
+
+.admin-signin input { background: var(--panel); color: var(--t-bright); }
+.admin-signin input:focus-visible { outline: 2px solid var(--cyan); outline-offset: 2px; }
+
+.admin-header .btn { width: auto; flex: 0 0 auto; margin-left: auto; }
+.admin-brand { flex-shrink: 0; }
+.admin-preview { width: min(1000px, 100%); }
+
+.admin-preview-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.admin-preview-header h2 { overflow-wrap: anywhere; min-width: 0; }
+.admin-preview-header .admin-dialog-mark { flex-shrink: 0; }
+.admin-dialog-mark:disabled { cursor: wait; opacity: 0.5; }
